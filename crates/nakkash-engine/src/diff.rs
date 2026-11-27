@@ -28,7 +28,7 @@ use std::thread;
 
 use nakkash_format::{Address, Diagnostic, Kind, Result};
 use nakkash_raster::{Frame, Image, RenderOptions};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::Session;
 
@@ -95,7 +95,8 @@ impl DiffOptions {
 }
 
 /// The error over one set of pixels.
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Error {
     /// How many pixels were measured.
     pub pixels: u64,
@@ -152,7 +153,8 @@ impl Floor {
 }
 
 /// One reference frame against the scene.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FrameDiff {
     /// The reference frame's file name.
     pub file: String,

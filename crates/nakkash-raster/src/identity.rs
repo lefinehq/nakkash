@@ -269,6 +269,16 @@ impl Hasher {
     }
 }
 
+/// The content hash of `bytes`, tagged `tag` so that bytes of different
+/// kinds that happen to agree hash apart: the identity hasher over raw
+/// bytes, the same in every run and on every machine. A fidelity record
+/// names our pixels and masks by it, and checks its files against it.
+pub fn content_hash(tag: &str, bytes: &[u8]) -> u128 {
+    let mut h = Hasher::new(tag);
+    h.bytes(bytes);
+    h.id().0
+}
+
 /// The identity of `frame` drawn on a `width` by `height` canvas with
 /// `options` ([D90]): two frames with the same identity draw the same
 /// image, bit for bit, so a render draws one and copies it for the other.

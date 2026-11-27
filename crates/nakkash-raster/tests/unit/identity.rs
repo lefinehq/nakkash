@@ -268,3 +268,33 @@ fn a_forged_id_of_a_dropped_font_is_still_its_own_font() {
     let forged = Blob::from_raw_parts(Arc::new(other_bytes()), dropped);
     assert_ne!(id(&glyphs(FontData::new(forged, 0))), first);
 }
+
+/// A content hash is the identity hasher over raw bytes, with a fixed key:
+/// the same value in every run and on every machine, so a record written
+/// on one day is checked on another.
+#[test]
+fn a_content_hash_is_the_same_everywhere() {
+    assert_eq!(
+        content_hash("pixels", b"nakkash"),
+        0xc80f_6d55_92c7_8766_8f1d_ecda_27f0_ec85
+    );
+}
+
+/// The tag and the bytes are both written with their lengths, so moving a
+/// byte from one to the other is another hash.
+#[test]
+fn a_content_hash_tells_tags_and_bytes_apart() {
+    let hashes = [
+        content_hash("pixels", b"ab"),
+        content_hash("mask", b"ab"),
+        content_hash("pixels", b"ac"),
+        content_hash("pixels", b"abc"),
+        content_hash("pixelsa", b"b"),
+        content_hash("pixels", b""),
+    ];
+    for (i, a) in hashes.iter().enumerate() {
+        for b in &hashes[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+}

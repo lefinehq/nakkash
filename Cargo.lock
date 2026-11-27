@@ -1686,6 +1686,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
+name = "lz4_flex"
+version = "0.11.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13591d77a9b6d941f7e6fcade7f9dfd9e801308752bde50c0a9bb5852778c22c"
+dependencies = [
+ "twox-hash",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1891,8 +1900,10 @@ dependencies = [
 name = "nakkash-engine"
 version = "0.0.0"
 dependencies = [
+ "binrw",
  "glam",
  "insta",
+ "lz4_flex",
  "nakkash-audio",
  "nakkash-baked",
  "nakkash-edit",
@@ -1909,12 +1920,14 @@ dependencies = [
  "nakkash-video",
  "pathdiff",
  "pretty_assertions",
+ "proptest",
  "rayon",
  "rstest",
  "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "winnow",
 ]
 
 [[package]]
@@ -3848,6 +3861,12 @@ dependencies = [
  "tracing-core",
  "tracing-serde",
 ]
+
+[[package]]
+name = "twox-hash"
+version = "2.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 
 [[package]]
 name = "typed-path"

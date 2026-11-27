@@ -30,6 +30,7 @@ pub mod instance;
 mod level;
 mod mix;
 mod pictures;
+pub mod record;
 mod relocate;
 mod render;
 mod session;

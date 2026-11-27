@@ -97,6 +97,37 @@ impl RenderOptions {
     }
 }
 
+/// The instruction set [`Simd::Native`] draws with on this processor, by a
+/// stable lowercase name: `neon`, `sse2`, `sse4.2`, `avx2`, `avx512`,
+/// `simd128` or `fallback`. Frames drawn natively may differ in the last
+/// bit between levels ([D12]), so a record of them is kept per level.
+///
+/// [D12]: https://github.com/lefinehq/nakkash/blob/main/docs/design/decisions.md#d12-what-repeatable-means
+pub fn simd_level() -> &'static str {
+    let native = RenderOptions {
+        simd: Simd::Native,
+        ..RenderOptions::default()
+    };
+    match native.level() {
+        Level::Fallback(_) => "fallback",
+        #[cfg(target_arch = "aarch64")]
+        Level::Neon(_) => "neon",
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        Level::Sse2(_) => "sse2",
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        Level::Sse4_2(_) => "sse4.2",
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        Level::Avx2(_) => "avx2",
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        Level::Avx512(_) => "avx512",
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        Level::WasmSimd128(_) => "simd128",
+        // The list of levels is open: one added later is named when it is
+        // matched here.
+        _ => "unknown",
+    }
+}
+
 /// Draws `frame` into a `width` by `height` image with the default options.
 ///
 /// # Errors

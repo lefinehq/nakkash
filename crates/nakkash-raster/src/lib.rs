@@ -77,7 +77,7 @@ pub use generate::{
     NOISE_CELL, NoiseKind, Overflow, Ramp, VenetianBlinds,
 };
 pub use homography::Homography;
-pub use identity::{frame_identity, reused as drawings_reused, verify_hit};
+pub use identity::{content_hash, frame_identity, reused as drawings_reused, verify_hit};
 pub use image::Image;
 pub use lens::{IRIS_ROWS, Iris, LensBlur, LensMap, Level as LensLevel, Row as IrisRow};
 pub use light::Bevel;
@@ -93,7 +93,7 @@ pub use projected::{Filter, Landing};
 pub use radial::{
     Fade as RadialFade, RadialBlur, RadialKind, Rays, Ring, Rings, Stretch as RadialStretch,
 };
-pub use render::{Quality, RenderOptions, Simd, render, render_on, render_with};
+pub use render::{Quality, RenderOptions, Simd, render, render_on, render_with, simd_level};
 pub use sound::{Heard, level};
 pub use style::{
     CAPS, Cap, Color, Dashes, DrawStyle, FILL_RULES, FillRule, Gradient, GradientShape, JOINS,

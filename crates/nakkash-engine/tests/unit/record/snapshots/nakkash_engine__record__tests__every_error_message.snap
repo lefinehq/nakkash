@@ -1,0 +1,12 @@
+---
+source: crates/nakkash-engine/src/record/../../tests/unit/record/mod.rs
+expression: text
+---
+hash: `ABC` is not a valid 128-bit hash; expected 32 lowercase hexadecimal digits, e.g. `0000000000000000000000000000beef`
+not a pixel file: <dir>/f0000.cov: not a pixel file of a fidelity record; expected a pixel file whole, as the record wrote it; record the sample again
+other kind: <dir>/f0000.ours.lz4: holds a mask, not our pixels; expected a pixel file whole, as the record wrote it; record the sample again
+other size: <dir>/f0000.ours.lz4: holds a 3x2 frame, not 2x3; expected a pixel file whole, as the record wrote it; record the sample again
+damaged payload: <dir>/f0000.ours.lz4: its payload is cut short or damaged; expected a pixel file whole, as the record wrote it; record the sample again
+content hash: <dir>/f0000.shown: its payload hashes to 1c878d0577defd048f6f750c9e95ad9e, not to the c78041a5b0834c5e75ed8f46a7e5a341 its header gives; expected a pixel file whole, as the record wrote it; record the sample again
+mask of another size: the coverage mask has 5 pixels, not the 3x2 of our frame; expected a mask with one value for each pixel of our frame
+record: <dir>/record.json: missing field `schema` at line 1 column 2; expected a record written by this build: {"schema":"nakkash.FidelityRecord.1",…}
