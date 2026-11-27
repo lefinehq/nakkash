@@ -10,8 +10,8 @@
 //!   hit);
 //! - pictures by a hash of their pixels, made once per picture; video
 //!   frames are pictures;
-//! - fonts by their data's id, which no other font data ever has, and the
-//!   face's index;
+//! - fonts by a hash of their data, made once per font, and the face's
+//!   index, so an identity is the same in every run;
 //! - children, effect inputs and matte sources by their own identities;
 //! - a layer's own time only when one of its effects reads it, since
 //!   nothing else draws it.
@@ -312,6 +312,48 @@ pub fn frame_identity(
     h.id().0
 }
 
+/// The identity of a font's bytes ([D90]), so a glyph run's identity does
+/// not depend on which load of the font it holds. Made once per font: the
+/// memo is keyed by the blob's id, which `Blob::new` takes from a
+/// process-wide counter and never reuses.
+///
+/// `Blob::from_raw_parts` can attach any id to any bytes, though, so an
+/// entry also holds a `Weak` of the `Arc` that owns the bytes it was made
+/// from, and a hit counts only when that is the very `Arc` of this font;
+/// otherwise the hash is made again and replaces the entry (a miss, never
+/// another font's hash). The `Weak` keeps its allocation reserved, so the
+/// `Arc`'s address cannot be taken by another font while the entry lives;
+/// no address of the bytes themselves is compared. Entries are read under
+/// a shared lock; a new font takes the write lock and drops the entries
+/// whose fonts are gone, so the memo holds only live fonts.
+///
+/// [D90]: https://github.com/lefinehq/nakkash/blob/main/docs/design/decisions.md#d90-a-frame-is-drawn-from-a-plan-that-knows-what-each-drawing-is-under-one-memory-budget
+fn font_id(font: &vello_cpu::peniko::FontData) -> Id {
+    use std::sync::{Arc, LazyLock, PoisonError, RwLock, Weak};
+    /// What owns the bytes an identity was made from.
+    type Owner = Weak<dyn AsRef<[u8]> + Send + Sync>;
+    static FONTS: LazyLock<RwLock<HashMap<u64, (Owner, Id)>>> =
+        LazyLock::new(|| RwLock::new(HashMap::new()));
+    let key = font.data.id();
+    let owner: Owner = Arc::downgrade(&font.data.clone().into_raw_parts().0);
+    if let Some((made_from, id)) = FONTS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&key)
+        && Weak::ptr_eq(made_from, &owner)
+    {
+        return *id;
+    }
+    // Hashed outside the lock: a large font does not hold up the others.
+    let mut h = Hasher::new("font");
+    h.bytes(font.data.data());
+    let id = h.id();
+    let mut fonts = FONTS.write().unwrap_or_else(PoisonError::into_inner);
+    fonts.retain(|_, (owner, _)| owner.strong_count() > 0);
+    fonts.insert(key, (owner, id));
+    id
+}
+
 /// Uses of a drawing served from one kept by identity, over the process.
 static REUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -399,8 +441,7 @@ impl Identities {
                     style,
                 } = glyphs;
                 let mut h = Hasher::new("glyphs");
-                // The font's data by its id, which no other data has.
-                h.u64(font.data.id());
+                h.id_of(font_id(font));
                 h.u32(font.index);
                 h.f32(*size);
                 h.all(glyphs, |h, glyph| {
