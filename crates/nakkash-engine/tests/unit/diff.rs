@@ -1,11 +1,22 @@
 //! Unit tests for `src/diff.rs`: a scene against references drawn from
 //! itself, moved, missing, sampled between frames, and refused.
 
+use std::fmt;
 use std::fs;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use pretty_assertions::assert_eq;
+use rstest::rstest;
+use tracing::Subscriber;
+use tracing::field::{Field, Visit};
+use tracing::span::{Attributes, Id};
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::{Context, SubscriberExt};
 
 use super::*;
+use crate::telemetry::timing::{STAGE_FIELD, STAGE_SPAN, STAGE_TARGET};
+use crate::test_support::with_subscriber;
 
 /// A 40x20 scene at 10 fps lasting 1 s: a white square crossing a black
 /// canvas, and a grey bar that a reference may leave out.
@@ -51,6 +62,57 @@ fn options(frames: Vec<PathBuf>, fps: f64) -> DiffOptions {
         images: None,
         ignore: Vec::new(),
     }
+}
+
+/// A layer that counts the engine's render steps as they start, on any
+/// thread the subscriber is entered on.
+#[derive(Clone, Default)]
+struct Renders(Arc<AtomicUsize>);
+
+impl<S: Subscriber> Layer<S> for Renders {
+    fn on_new_span(&self, attrs: &Attributes<'_>, _: &Id, _: Context<'_, S>) {
+        let meta = attrs.metadata();
+        if meta.target() == STAGE_TARGET && meta.name() == STAGE_SPAN {
+            let mut render = IsRender(false);
+            attrs.record(&mut render);
+            self.0.fetch_add(usize::from(render.0), Ordering::Relaxed);
+        }
+    }
+}
+
+/// Whether a step span's name is `render`.
+struct IsRender(bool);
+
+impl Visit for IsRender {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        self.0 |= field.name() == STAGE_FIELD && value == "render";
+    }
+
+    // Step names are strings, which arrive through `record_str`.
+    fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {}
+}
+
+/// How many renders the engine draws while `body` runs.
+fn renders(body: impl FnOnce()) -> usize {
+    let renders = Renders::default();
+    with_subscriber(tracing_subscriber::registry().with(renders.clone()), body);
+    renders.0.load(Ordering::Relaxed)
+}
+
+#[rstest]
+#[case::plain(&[], 2)]
+#[case::with_an_ignored_layer(&["bar"], 3)]
+fn each_frame_is_drawn_once_with_its_masks(#[case] ignore: &[&str], #[case] per_frame: usize) {
+    let scene = session(SCENE);
+    // A folder per case: `cargo test` runs the cases as threads of one process.
+    let name = format!("once-{}", ignore.join("-"));
+    let frames = references(&name, &scene, &[0.0, 5.0, 10.0]);
+    let mut opts = options(frames, 10.0);
+    opts.ignore = ignore.iter().map(|a| a.parse().unwrap()).collect();
+    let n = renders(|| {
+        scene.diff(&opts).unwrap();
+    });
+    assert_eq!(n, 3 * per_frame);
 }
 
 #[test]
