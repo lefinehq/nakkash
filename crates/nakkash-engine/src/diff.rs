@@ -23,6 +23,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 
 use nakkash_format::{Address, Diagnostic, Kind, Result};
@@ -201,16 +202,26 @@ pub struct Diff {
 }
 
 /// One frame drawn and read: our pixels, where we draw, and the reference's.
-struct Pair {
+pub(crate) struct Pair {
     /// Our frame, as `render` draws it.
     ours: Image,
     /// Whether we draw each pixel, before the background.
     coverage: Vec<bool>,
     /// Whether we draw each pixel with the ignored layers shown; none when
-    /// no layer is ignored, or the pass does not need it.
+    /// no layer is ignored.
     shown: Option<Vec<bool>>,
     /// The reference frame.
     reference: Image,
+}
+
+/// One frame's masks: drawn once in the coverage pass, which needs them for
+/// the union, and kept for the measure pass, so it draws only our frame.
+pub(crate) struct Masks {
+    /// Whether the measured scene draws each pixel, before the background.
+    pub(crate) coverage: Vec<bool>,
+    /// Whether the scene draws each pixel with the ignored layers shown;
+    /// none when no layer is ignored.
+    pub(crate) shown: Option<Vec<bool>>,
 }
 
 impl Session {
@@ -251,19 +262,31 @@ impl Session {
                 (&hidden, Some(self))
             }
         };
-        let union = measured.union(options, &times)?;
-        let frames = measured.each_pair(options, &times, shown, &|i, pair| {
+        // The coverage pass: every frame's masks, kept for the measure pass.
+        let masks = measured.each_frame(times.len(), &|i| measured.masks(shown, times[i]))?;
+        let union = union(&masks);
+        // The measure pass: frame `i` takes its own masks, once. A lock per
+        // frame hands each its masks without the frames waiting on each other.
+        let masks: Vec<Mutex<Option<Masks>>> =
+            masks.into_iter().map(|m| Mutex::new(Some(m))).collect();
+        let frames = measured.each_frame(times.len(), &|i| {
+            let masks = masks[i]
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .expect("each frame's masks are taken once");
+            let pair = measured.pair(options, times[i], i, masks)?;
             let file = file_name(&options.frames[i]);
-            let content = content(pair, options.tolerance);
+            let content = content(&pair, options.tolerance);
             if let Some(dir) = &options.images {
-                write_error_image(dir, &file, pair, &union, &content, options.tolerance)?;
+                write_error_image(dir, &file, &pair, &union, &content, options.tolerance)?;
             }
             Ok(FrameDiff {
                 file,
                 time: times[i],
-                content: error(pair, &content, options.tolerance),
-                drawn: error(pair, &pair.coverage, options.tolerance),
-                union: error(pair, &union, options.tolerance),
+                content: error(&pair, &content, options.tolerance),
+                drawn: error(&pair, &pair.coverage, options.tolerance),
+                union: error(&pair, &union, options.tolerance),
             })
         })?;
         let pool = |pick: fn(&FrameDiff) -> f64| pooled(&frames, pick);
@@ -279,47 +302,29 @@ impl Session {
         })
     }
 
-    /// Where the scene draws in any of the frames.
-    fn union(&self, options: &DiffOptions, times: &[f64]) -> Result<Vec<bool>> {
-        let masks = self.each_pair(options, times, None, &|_, pair| Ok(pair.coverage.clone()))?;
-        Ok(masks.into_iter().fold(Vec::new(), |mut union, mask| {
-            if union.is_empty() {
-                return mask;
-            }
-            union.iter_mut().zip(mask).for_each(|(u, m)| *u |= m);
-            union
-        }))
-    }
-
-    /// Calls `each` on every frame drawn and read, on as many threads as the
-    /// processor has (or as `--threads` allows), and returns the results in frame order, or the first
-    /// frame's error. `shown`, if any, is this scene with the ignored layers
-    /// drawn, for [`Pair::shown`].
-    fn each_pair<T: Send>(
+    /// Calls `each` on every frame index below `count`, on as many threads as
+    /// a render draws on (`--threads`, D90), and returns the results in frame
+    /// order, or the first frame's error. Each thread enters the caller's
+    /// tracing dispatcher, so its steps are timed and logged with the caller's.
+    pub(crate) fn each_frame<T: Send>(
         &self,
-        options: &DiffOptions,
-        times: &[f64],
-        shown: Option<&Session>,
-        each: &(dyn Fn(usize, &Pair) -> Result<T> + Sync),
+        count: usize,
+        each: &(dyn Fn(usize) -> Result<T> + Sync),
     ) -> Result<Vec<T>> {
-        // As many threads as a render draws on (`--threads`, D90).
         let threads = crate::session::threads();
-        let indices: Vec<usize> = (0..times.len()).collect();
+        let indices: Vec<usize> = (0..count).collect();
         let chunk = indices.len().div_ceil(threads).max(1);
+        // The default dispatcher is per thread: a scoped one (a test's, or
+        // the CLI's `--timings`) does not reach spawned threads by itself.
+        let dispatch = &tracing::dispatcher::get_default(Clone::clone);
         let results: Vec<Vec<(usize, Result<T>)>> = thread::scope(|scope| {
             let handles: Vec<_> = indices
                 .chunks(chunk)
                 .map(|part| {
                     scope.spawn(move || {
-                        part.iter()
-                            .map(|&i| {
-                                (
-                                    i,
-                                    self.pair(options, shown, times[i], i)
-                                        .and_then(|pair| each(i, &pair)),
-                                )
-                            })
-                            .collect::<Vec<_>>()
+                        tracing::dispatcher::with_default(dispatch, || {
+                            part.iter().map(|&i| (i, each(i))).collect::<Vec<_>>()
+                        })
                     })
                 })
                 .collect();
@@ -333,20 +338,30 @@ impl Session {
         ordered.into_iter().map(|(_, result)| result).collect()
     }
 
-    /// Reference frame `index` and the scene drawn at `time` seconds, with
-    /// where `shown` draws then, if given.
-    fn pair(
+    /// Where the scene draws at `time` seconds, and where `shown` draws
+    /// then, if given: each its display list drawn bare, once.
+    pub(crate) fn masks(&self, shown: Option<&Session>, time: f64) -> Result<Masks> {
+        let frame = time * self.scene().root.fps;
+        Ok(Masks {
+            coverage: self.coverage(self.display_list(frame)?)?,
+            shown: shown
+                .map(|session| self.coverage(session.display_list(frame)?))
+                .transpose()?,
+        })
+    }
+
+    /// Reference frame `index`, read once, and the scene drawn at `time`
+    /// seconds, once, with the frame's `masks` from the coverage pass.
+    pub(crate) fn pair(
         &self,
         options: &DiffOptions,
-        shown: Option<&Session>,
         time: f64,
         index: usize,
+        masks: Masks,
     ) -> Result<Pair> {
         let path = &options.frames[index];
         let bytes = fs::read(path).map_err(|e| Diagnostic::io("read", path, &e))?;
         let reference = Image::from_png(&bytes).map_err(|d| d.at(path.display().to_string()))?;
-        let frame = time * self.scene().root.fps;
-        let list = self.display_list(frame)?;
         let (width, height) = self.canvas()?;
         if (reference.width(), reference.height()) != (width, height) {
             return Err(Diagnostic::new(
@@ -360,13 +375,11 @@ impl Session {
             )
             .expected("reference frames of the scene's size"));
         }
-        let ours = self.draw_reference(&list, RenderOptions::default())?;
-        let shown = shown
-            .map(|session| self.coverage(session.display_list(frame)?))
-            .transpose()?;
+        let list = self.display_list(time * self.scene().root.fps)?;
+        let Masks { coverage, shown } = masks;
         Ok(Pair {
-            ours,
-            coverage: self.coverage(list)?,
+            ours: self.draw_reference(&list, RenderOptions::default())?,
+            coverage,
             shown,
             reference,
         })
@@ -385,6 +398,20 @@ impl Session {
             .map(|p| p[3] > 0)
             .collect())
     }
+}
+
+/// Where the scene draws in any of the frames: every frame's coverage, or'd.
+fn union(masks: &[Masks]) -> Vec<bool> {
+    masks.iter().fold(Vec::new(), |mut union, mask| {
+        if union.is_empty() {
+            return mask.coverage.clone();
+        }
+        union
+            .iter_mut()
+            .zip(&mask.coverage)
+            .for_each(|(u, m)| *u |= m);
+        union
+    })
 }
 
 /// The content window of `pair`: where the scene draws, and where it does
