@@ -182,3 +182,65 @@ fn a_layers_time_counts_only_where_an_effect_reads_it() {
     assert_eq!(at(0.5, "gaussian-blur"), at(1.5, "gaussian-blur"));
     assert_ne!(at(0.5, "particles"), at(1.5, "particles"));
 }
+
+const FONT: &[u8] = include_bytes!("../fixtures/FixtureSans-Black.ttf");
+
+/// A font over `bytes`, loaded as a blob of its own.
+fn font(bytes: Vec<u8>, index: u32) -> vello_cpu::peniko::FontData {
+    vello_cpu::peniko::FontData::new(vello_cpu::peniko::Blob::new(Arc::new(bytes)), index)
+}
+
+/// A glyph run of fixed glyphs and paint in `font`.
+fn glyphs(font: vello_cpu::peniko::FontData) -> Node {
+    Node::Glyphs(GlyphDraw {
+        font,
+        size: 12.0,
+        glyphs: vec![crate::list::Glyph {
+            id: 3,
+            x: 1.0,
+            y: 2.0,
+        }],
+        glyph_transform: None,
+        coords: Vec::new(),
+        paint: Paint::Solid(Color::BLACK),
+        style: DrawStyle::Fill(FillRule::NonZero),
+    })
+}
+
+/// The fixture font with its last byte changed: other bytes, same size.
+fn other_bytes() -> Vec<u8> {
+    let mut bytes = FONT.to_vec();
+    *bytes.last_mut().expect("a font has bytes") ^= 1;
+    bytes
+}
+
+#[test]
+fn fonts_are_known_by_their_bytes_not_by_their_load() {
+    let a = glyphs(font(FONT.to_vec(), 0));
+    let b = glyphs(font(FONT.to_vec(), 0));
+    assert_eq!(id(&a), id(&b));
+}
+
+// The repository has one test font and no collection, so "another font" is
+// the same font with a byte changed, and "another face" is index 1 of it
+// (the index is hashed, never read).
+#[rstest::rstest]
+#[case::other_bytes(font(other_bytes(), 0))]
+#[case::other_face(font(FONT.to_vec(), 1))]
+fn another_font_or_face_is_another_identity(#[case] other: vello_cpu::peniko::FontData) {
+    let first = glyphs(font(FONT.to_vec(), 0));
+    assert_ne!(id(&first), id(&glyphs(other)));
+}
+
+#[test]
+fn a_dropped_fonts_id_is_never_reused() {
+    // Blob ids come from a process-wide counter that only goes up, so the
+    // memo keyed by them cannot answer for another font.
+    let a = font(FONT.to_vec(), 0);
+    let first = id(&glyphs(a.clone()));
+    let dropped = a.data.id();
+    drop(a);
+    let b = font(other_bytes(), 0);
+    assert_ne!(b.data.id(), dropped);
+    assert_ne!(id(&glyphs(b)), first);
+}

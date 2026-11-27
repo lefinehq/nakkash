@@ -10,8 +10,8 @@
 //!   hit);
 //! - pictures by a hash of their pixels, made once per picture; video
 //!   frames are pictures;
-//! - fonts by their data's id, which no other font data ever has, and the
-//!   face's index;
+//! - fonts by a hash of their data, made once per font, and the face's
+//!   index, so an identity is the same in every run;
 //! - children, effect inputs and matte sources by their own identities;
 //! - a layer's own time only when one of its effects reads it, since
 //!   nothing else draws it.
@@ -312,6 +312,36 @@ pub fn frame_identity(
     h.id().0
 }
 
+/// The identity of a font's bytes ([D90]), so a glyph run's identity does
+/// not depend on which load of the font it holds. Made once per font: the
+/// memo is keyed by the blob's id, which comes from a process-wide counter
+/// and is never reused, so it cannot answer for another font.
+///
+/// [D90]: https://github.com/lefinehq/nakkash/blob/main/docs/design/decisions.md#d90-a-frame-is-drawn-from-a-plan-that-knows-what-each-drawing-is-under-one-memory-budget
+fn font_id(font: &vello_cpu::peniko::FontData) -> Id {
+    use std::sync::{Mutex, PoisonError};
+    static FONTS: Mutex<Option<HashMap<u64, Id>>> = Mutex::new(None);
+    let key = font.data.id();
+    if let Some(&id) = FONTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get_or_insert_default()
+        .get(&key)
+    {
+        return id;
+    }
+    // Hashed outside the lock: a large font does not hold up the others.
+    let mut h = Hasher::new("font");
+    h.bytes(font.data.data());
+    let id = h.id();
+    FONTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get_or_insert_default()
+        .insert(key, id);
+    id
+}
+
 /// Uses of a drawing served from one kept by identity, over the process.
 static REUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -399,8 +429,7 @@ impl Identities {
                     style,
                 } = glyphs;
                 let mut h = Hasher::new("glyphs");
-                // The font's data by its id, which no other data has.
-                h.u64(font.data.id());
+                h.id_of(font_id(font));
                 h.u32(font.index);
                 h.f32(*size);
                 h.all(glyphs, |h, glyph| {
