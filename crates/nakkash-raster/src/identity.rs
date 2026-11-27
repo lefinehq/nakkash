@@ -314,31 +314,41 @@ pub fn frame_identity(
 
 /// The identity of a font's bytes ([D90]), so a glyph run's identity does
 /// not depend on which load of the font it holds. Made once per font: the
-/// memo is keyed by the blob's id, which comes from a process-wide counter
-/// and is never reused, so it cannot answer for another font.
+/// memo is keyed by the blob's id, which `Blob::new` takes from a
+/// process-wide counter and never reuses.
+///
+/// `Blob::from_raw_parts` can attach any id to any bytes, though, so an
+/// entry also keeps the address and length of the bytes it was made from,
+/// and a hit counts only when they match; otherwise the hash is made again
+/// and replaces the entry (a miss, never another font's hash). Entries are
+/// read under a shared lock; only a new font takes the write lock.
 ///
 /// [D90]: https://github.com/lefinehq/nakkash/blob/main/docs/design/decisions.md#d90-a-frame-is-drawn-from-a-plan-that-knows-what-each-drawing-is-under-one-memory-budget
 fn font_id(font: &vello_cpu::peniko::FontData) -> Id {
-    use std::sync::{Mutex, PoisonError};
-    static FONTS: Mutex<Option<HashMap<u64, Id>>> = Mutex::new(None);
+    use std::sync::{LazyLock, PoisonError, RwLock};
+    /// The bytes an identity was made from: where they are and how long.
+    type Source = (usize, usize);
+    static FONTS: LazyLock<RwLock<HashMap<u64, (Source, Id)>>> =
+        LazyLock::new(|| RwLock::new(HashMap::new()));
     let key = font.data.id();
-    if let Some(&id) = FONTS
-        .lock()
+    let bytes = font.data.data();
+    let source = (bytes.as_ptr() as usize, bytes.len());
+    if let Some(&(made_from, id)) = FONTS
+        .read()
         .unwrap_or_else(PoisonError::into_inner)
-        .get_or_insert_default()
         .get(&key)
+        && made_from == source
     {
         return id;
     }
     // Hashed outside the lock: a large font does not hold up the others.
     let mut h = Hasher::new("font");
-    h.bytes(font.data.data());
+    h.bytes(bytes);
     let id = h.id();
     FONTS
-        .lock()
+        .write()
         .unwrap_or_else(PoisonError::into_inner)
-        .get_or_insert_default()
-        .insert(key, id);
+        .insert(key, (source, id));
     id
 }
 

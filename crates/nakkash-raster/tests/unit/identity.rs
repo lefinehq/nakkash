@@ -207,10 +207,10 @@ fn glyphs(font: vello_cpu::peniko::FontData) -> Node {
     })
 }
 
-/// The fixture font with its last byte changed: other bytes, same size.
+/// The fixture font with a byte in its middle changed: other bytes, same size.
 fn other_bytes() -> Vec<u8> {
     let mut bytes = FONT.to_vec();
-    *bytes.last_mut().expect("a font has bytes") ^= 1;
+    bytes[FONT.len() / 2] ^= 1;
     bytes
 }
 
@@ -222,7 +222,7 @@ fn fonts_are_known_by_their_bytes_not_by_their_load() {
 }
 
 // The repository has one test font and no collection, so "another font" is
-// the same font with a byte changed, and "another face" is index 1 of it
+// the same font with a middle byte changed, and "another face" is index 1 of it
 // (the index is hashed, never read).
 #[rstest::rstest]
 #[case::other_bytes(font(other_bytes(), 0))]
@@ -243,4 +243,16 @@ fn a_dropped_fonts_id_is_never_reused() {
     let b = font(other_bytes(), 0);
     assert_ne!(b.data.id(), dropped);
     assert_ne!(id(&glyphs(b)), first);
+}
+
+#[test]
+fn a_blob_given_another_blobs_id_is_still_its_own_font() {
+    // `Blob::from_raw_parts` can attach any id to any bytes; the memo must
+    // not answer with the first font's hash for the second.
+    use vello_cpu::peniko::{Blob, FontData};
+    let a = font(FONT.to_vec(), 0);
+    let first = id(&glyphs(a.clone()));
+    let forged = Blob::from_raw_parts(Arc::new(other_bytes()), a.data.id());
+    assert_eq!(forged.id(), a.data.id());
+    assert_ne!(id(&glyphs(FontData::new(forged, 0))), first);
 }
