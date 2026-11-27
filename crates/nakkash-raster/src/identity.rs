@@ -318,37 +318,39 @@ pub fn frame_identity(
 /// process-wide counter and never reuses.
 ///
 /// `Blob::from_raw_parts` can attach any id to any bytes, though, so an
-/// entry also keeps the address and length of the bytes it was made from,
-/// and a hit counts only when they match; otherwise the hash is made again
-/// and replaces the entry (a miss, never another font's hash). Entries are
-/// read under a shared lock; only a new font takes the write lock.
+/// entry also holds a `Weak` of the `Arc` that owns the bytes it was made
+/// from, and a hit counts only when that is the very `Arc` of this font;
+/// otherwise the hash is made again and replaces the entry (a miss, never
+/// another font's hash). The `Weak` keeps its allocation reserved, so the
+/// `Arc`'s address cannot be taken by another font while the entry lives;
+/// no address of the bytes themselves is compared. Entries are read under
+/// a shared lock; a new font takes the write lock and drops the entries
+/// whose fonts are gone, so the memo holds only live fonts.
 ///
 /// [D90]: https://github.com/lefinehq/nakkash/blob/main/docs/design/decisions.md#d90-a-frame-is-drawn-from-a-plan-that-knows-what-each-drawing-is-under-one-memory-budget
 fn font_id(font: &vello_cpu::peniko::FontData) -> Id {
-    use std::sync::{LazyLock, PoisonError, RwLock};
-    /// The bytes an identity was made from: where they are and how long.
-    type Source = (usize, usize);
-    static FONTS: LazyLock<RwLock<HashMap<u64, (Source, Id)>>> =
+    use std::sync::{Arc, LazyLock, PoisonError, RwLock, Weak};
+    /// What owns the bytes an identity was made from.
+    type Owner = Weak<dyn AsRef<[u8]> + Send + Sync>;
+    static FONTS: LazyLock<RwLock<HashMap<u64, (Owner, Id)>>> =
         LazyLock::new(|| RwLock::new(HashMap::new()));
     let key = font.data.id();
-    let bytes = font.data.data();
-    let source = (bytes.as_ptr() as usize, bytes.len());
-    if let Some(&(made_from, id)) = FONTS
+    let owner: Owner = Arc::downgrade(&font.data.clone().into_raw_parts().0);
+    if let Some((made_from, id)) = FONTS
         .read()
         .unwrap_or_else(PoisonError::into_inner)
         .get(&key)
-        && made_from == source
+        && Weak::ptr_eq(made_from, &owner)
     {
-        return id;
+        return *id;
     }
     // Hashed outside the lock: a large font does not hold up the others.
     let mut h = Hasher::new("font");
-    h.bytes(bytes);
+    h.bytes(font.data.data());
     let id = h.id();
-    FONTS
-        .write()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(key, (source, id));
+    let mut fonts = FONTS.write().unwrap_or_else(PoisonError::into_inner);
+    fonts.retain(|_, (owner, _)| owner.strong_count() > 0);
+    fonts.insert(key, (owner, id));
     id
 }
 

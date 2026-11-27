@@ -256,3 +256,15 @@ fn a_blob_given_another_blobs_id_is_still_its_own_font() {
     assert_eq!(forged.id(), a.data.id());
     assert_ne!(id(&glyphs(FontData::new(forged, 0))), first);
 }
+
+#[test]
+fn a_forged_id_of_a_dropped_font_is_still_its_own_font() {
+    // The same, after the first blob is gone and its memory may be reused.
+    use vello_cpu::peniko::{Blob, FontData};
+    let a = font(FONT.to_vec(), 0);
+    let first = id(&glyphs(a.clone()));
+    let dropped = a.data.id();
+    drop(a);
+    let forged = Blob::from_raw_parts(Arc::new(other_bytes()), dropped);
+    assert_ne!(id(&glyphs(FontData::new(forged, 0))), first);
+}
