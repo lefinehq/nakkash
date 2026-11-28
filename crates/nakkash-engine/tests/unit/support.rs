@@ -1,8 +1,10 @@
 //! Helpers shared by the unit tests.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
+use tracing::Dispatch;
 use tracing::Subscriber;
+use tracing::subscriber::NoSubscriber;
 
 /// Held while a test runs under a scoped subscriber.
 ///
@@ -15,12 +17,27 @@ use tracing::Subscriber;
 /// in parallel.
 static SCOPED: Mutex<()> = Mutex::new(());
 
+/// Two dispatchers that record nothing, registered for the whole process.
+///
+/// While at most one dispatcher is registered, tracing-core caches a new
+/// callsite's interest from the registering thread's own default, without
+/// the lock that orders it after other registrations. A test thread with no
+/// subscriber that first draws a step therefore caches "never" for the step
+/// span, and when that write lands after a scoped test's rebuild, the
+/// scoped test sees none of its steps (it counted 0 renders of 2 in CI).
+/// With two dispatchers always registered, every interest is computed under
+/// that lock, from every live dispatcher. A registration already under way
+/// when the first scoped test runs is not covered; CI runs the tests under
+/// nextest, one process per test, where none is.
+static KEEPERS: OnceLock<[Dispatch; 2]> = OnceLock::new();
+
 /// Runs `body` with `subscriber` as the scoped default, one such test at a
 /// time, with tracing's global interest cache rebuilt for this subscriber.
 pub(crate) fn with_subscriber<T>(
     subscriber: impl Subscriber + Send + Sync + 'static,
     body: impl FnOnce() -> T,
 ) -> T {
+    KEEPERS.get_or_init(|| [NoSubscriber::new(), NoSubscriber::new()].map(Dispatch::new));
     // A failed test poisons the lock; the next one may still run.
     let _turn = SCOPED.lock().unwrap_or_else(PoisonError::into_inner);
     tracing::subscriber::with_default(subscriber, || {
