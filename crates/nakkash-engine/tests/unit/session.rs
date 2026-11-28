@@ -442,6 +442,45 @@ fn the_first_frame_of_a_render_is_drawn_alone() {
     }
 }
 
+/// A layer at scale 0 draws, its displacement and grid included. Both read
+/// its pixels back through its transform, whose inverse is not finite
+/// there: a NaN reached a clamp in `grid` and panicked (found by the
+/// evolver, 2026-11-28).
+#[test]
+fn a_layer_at_scale_zero_with_a_displacement_and_a_grid_draws() {
+    let session: Session = r##"{"nakkash": 1, "size": "80x80", "fps": 12, "dur": "6f", "bg": "#940C20",
+        "layers": [{"id": "e0", "rect": "20x20", "anim": {"scale": "0 -> 0.92 @0-1f linear"},
+        "fx": [{"displacement-map": 24, "vertical": -24, "horizontal-from": "red", "behaviour": "tile", "edges": "wrap"},
+               {"grid": 3.01, "anchor": [89.99, 14.25], "corner": [41.333, 71.001], "color": "#8DDB2E", "mode": "difference"}]}]}"##
+        .parse()
+        .unwrap();
+    session.render_with(0.0, RenderOptions::GOLDEN).unwrap();
+}
+
+/// A frame whose work panics ends the render with that panic. The first
+/// frame is drawn alone; when it panicked, its place was never given back,
+/// and every other thread waited for room for ever (found by the evolver,
+/// 2026-11-28: a layer at scale 0 panicked in `grid`, and the render hung).
+#[test]
+fn a_frame_that_panics_ends_the_render_instead_of_hanging_it() {
+    let (sent, got) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let session: Session = TINY.parse().unwrap();
+        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            session.on_threads(0..8, |frame| {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                assert_ne!(frame, 0, "the first frame fails");
+                Ok(())
+            })
+        }));
+        let _ = sent.send(ended.is_err());
+    });
+    let panicked = got
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the render ends");
+    assert!(panicked, "the panic reaches the caller");
+}
+
 #[rstest::rstest]
 #[case::one_per_processor(100, 8, 0, 8)]
 #[case::the_limit(100, 8, 2, 2)]

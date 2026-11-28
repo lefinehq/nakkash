@@ -322,6 +322,12 @@ fn remap_reading(
     let source = &*pixels;
     let to: Affine = space.transform;
     let back = to.inverse();
+    // A transform with no inverse flattens the layer to a line or a point:
+    // no pixel shows any point of it, so the distortion draws nothing.
+    if !back.as_coeffs().iter().all(|c| c.is_finite()) {
+        let drawn = Pixels::made(source.width(), source.height(), |_| [0.0; 4]);
+        return std::mem::replace(pixels, drawn);
+    }
     let width = usize::from(source.width());
     let drawn = Pixels::made(source.width(), source.height(), |i| {
         let at = back * Point::new((i % width) as f64 + 0.5, (i / width) as f64 + 0.5);
