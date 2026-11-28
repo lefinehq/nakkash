@@ -436,8 +436,10 @@ fn child_trim_tick_and_settle_race_the_hammer() {
         for thread in 0..8u64 {
             let working = &working;
             scope.spawn(move || {
+                // Counted done even if it panics, so the trimming thread
+                // stops and the test fails instead of hanging.
+                let _done = Done(working);
                 hammer(thread, CAP);
-                working.fetch_sub(1, Relaxed);
             });
         }
         scope.spawn(|| {
@@ -460,6 +462,31 @@ fn child_trim_tick_and_settle_race_the_hammer() {
     let delta = since(before);
     assert!(delta.kept_peak <= CAP, "{delta:?}");
     settled(before);
+}
+
+/// A worker of a race test, counted out of the workers still running when
+/// it is dropped: when the worker returns or panics.
+struct Done<'a>(&'a AtomicU64);
+
+impl Drop for Done<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Relaxed);
+    }
+}
+
+#[test]
+fn a_race_worker_that_panics_is_still_counted_done() {
+    let working = AtomicU64::new(1);
+    let joined = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let _done = Done(&working);
+                panic!("a worker failed (expected by this test)");
+            })
+            .join()
+    });
+    assert!(joined.is_err(), "the worker panicked");
+    assert_eq!(working.load(Relaxed), 0, "and was counted done");
 }
 
 /// The keep cap of the hammer tests.
