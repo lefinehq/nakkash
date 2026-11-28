@@ -556,7 +556,8 @@ impl Plan {
         // by whole px lays the buffer's px exactly on the canvas's. A
         // buffer drawn larger than it lands starts on a whole px of the
         // canvas instead, so its halved copies' px fall on the canvas's.
-        let region = match (least > most, on_canvas_grid(region, &maps[0])) {
+        let aligned = least > most || (maps.len() == 1 && px_for_px(&maps[0], scale));
+        let region = match (aligned, on_canvas_grid(region, &maps[0])) {
             (true, Some(origin)) => Rect::new(origin.x, origin.y, region.x1, region.y1),
             _ => {
                 let snap = |v: f64| (v * scale).floor() / scale;
@@ -584,6 +585,21 @@ impl Plan {
             filter,
         })
     }
+}
+
+/// Whether `map` only scales the plane by `scale` and moves it, with no
+/// turn, shear or perspective: one whose buffer, drawn at `scale` and
+/// started on a whole px of the canvas, lays each of its px exactly on one
+/// of the canvas's, so laying it resamples nothing.
+fn px_for_px(map: &Homography, scale: f64) -> bool {
+    let [x, y, w] = map.rows();
+    if w[0] != 0.0 || w[1] != 0.0 || w[2] == 0.0 || w[2].is_nan() {
+        return false;
+    }
+    let k = 1.0 / w[2];
+    let tolerance = 1e-9 * scale.abs().max(1.0);
+    let near = |a: f64, b: f64| (a - b).abs() <= tolerance;
+    near(x[0] * k, scale) && near(y[1] * k, scale) && near(x[1] * k, 0.0) && near(y[0] * k, 0.0)
 }
 
 /// The point of the plane `map` takes to the whole px of the canvas at or

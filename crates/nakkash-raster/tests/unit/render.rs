@@ -979,6 +979,40 @@ fn an_effect_reading_its_whole_box_reads_the_part_off_the_canvas() {
     }
 }
 
+/// A layer whose effect reads its box draws on a buffer of its whole box
+/// when the box leaves the canvas (#225); laid by a move alone, at a part
+/// of a px, that buffer lands px for px and changes none of the layer's
+/// own pixels. Found by the evolver's neutral-effect oracle: a clear
+/// `solid-composite` moved a rounded corner's edge by up to 41 of 255.
+#[test]
+fn a_whole_box_buffer_laid_by_a_move_changes_no_pixel() {
+    let layer = |effects: Vec<Effect>| {
+        Node::Layer(Layer {
+            transform: Affine::translate((47.13, 27.49)),
+            effects,
+            bounds: Some(Rect::new(0.0, 0.0, 36.0, 58.0)),
+            ..Layer::new(vec![Node::Path(PathDraw {
+                path: vello_cpu::kurbo::RoundedRect::new(0.0, 0.0, 36.0, 58.0, 3.0).to_path(0.1),
+                paint: Paint::Solid(Color::rgba(1.0, 1.0, 1.0, 1.0)),
+                style: DrawStyle::Fill(FillRule::NonZero),
+            })])
+        })
+    };
+    let clear = Effect::new("solid-composite", &[("opacity", ParamValue::Number(0.0))]).unwrap();
+    let frame = |effects| Frame {
+        nodes: vec![layer(effects)],
+        ..Frame::default()
+    };
+    // The box reaches 83 by 85 on an 80 by 80 canvas: it leaves it.
+    let plain = render_with(&frame(vec![]), 80, 80, RenderOptions::GOLDEN).unwrap();
+    let with = render_with(&frame(vec![clear]), 80, 80, RenderOptions::GOLDEN).unwrap();
+    for y in 0..80 {
+        for x in 0..80 {
+            assert_eq!(with.pixel(x, y), plain.pixel(x, y), "({x}, {y})");
+        }
+    }
+}
+
 /// The SIMD level is the one `Simd::Native` draws with, named the same on
 /// every run.
 #[test]
