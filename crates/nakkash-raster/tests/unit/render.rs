@@ -1027,3 +1027,36 @@ fn the_simd_level_is_named_for_this_processor() {
     );
     assert_eq!(level, simd_level());
 }
+
+/// A feathered mask whose outline runs past the frame is feathered as the
+/// outline it is, not as if cut at the frame's edge: the frame shows the
+/// same pixels wherever it is laid over the layer. Found by the evolver's
+/// shift relation (2026-11-28): moving such a scene 1 px down changed the
+/// row along the top edge by 45 of 255.
+#[test]
+fn a_feathered_mask_past_the_frame_is_not_cut_at_its_edge() {
+    let frame = |top: f64| Frame {
+        nodes: vec![Node::Layer(Layer {
+            transform: Affine::translate((10.0, top)),
+            masks: vec![crate::list::LayerMask {
+                path: Rect::new(0.0, 0.0, 60.0, 20.0).to_path(0.1),
+                mode: crate::list::MaskMode::Add,
+                inverted: false,
+                opacity: 1.0,
+                feather: [5.0, 5.0],
+                expand: 0.0,
+            }],
+            ..Layer::new(vec![cover(80.0, Color::WHITE)])
+        })],
+        ..Frame::default()
+    };
+    // The outline starts 8 px above the frame; on the taller frame the same
+    // layer lies 6 px lower, so the frames' rows y and y + 6 are one row.
+    let shown = render_with(&frame(-8.0), 80, 40, RenderOptions::GOLDEN).unwrap();
+    let lower = render_with(&frame(-2.0), 80, 46, RenderOptions::GOLDEN).unwrap();
+    for y in 0..40 {
+        for x in 0..80 {
+            assert_eq!(shown.pixel(x, y), lower.pixel(x, y + 6), "({x}, {y})");
+        }
+    }
+}
