@@ -690,6 +690,15 @@ impl Session {
                     ended.1.notify_all();
                     break;
                 }
+                // The frame's place is given back however its work ends. A
+                // frame whose work panicked kept it, and every thread
+                // waiting for room waited for it for ever: the render hung
+                // instead of failing (found by the evolver, 2026-11-28).
+                let place = Place {
+                    drawing: &drawing,
+                    ended: &ended.1,
+                    stop: &stop,
+                };
                 nakkash_raster::memory::note_frames_at_once(beside as u64 + 1);
                 let first = beside == 0;
                 let started = starts.fetch_add(1, Ordering::AcqRel);
@@ -697,7 +706,7 @@ impl Session {
                 let done = work(frame);
                 // Alone: nothing was drawn beside it, from start to end.
                 let alone = first && starts.load(Ordering::Acquire) == started + 1;
-                drawing.fetch_sub(1, Ordering::AcqRel);
+                drop(place);
                 // A frame's cost: the most grids it held at once, and, as
                 // measured on a frame drawn alone, what it held beyond them
                 // (the peak above what the process held before, less its
@@ -1152,6 +1161,26 @@ pub(crate) fn threads() -> usize {
     match THREADS.load(Ordering::Relaxed) {
         0 => nakkash_machine::default_threads(),
         limit => limit,
+    }
+}
+
+/// A frame's place among those being drawn, given back when dropped: once
+/// its work ends, or as a panic in it unwinds, when it also stops the
+/// render, so the threads waiting for room leave and the panic reaches the
+/// caller.
+struct Place<'a> {
+    drawing: &'a AtomicUsize,
+    ended: &'a Condvar,
+    stop: &'a AtomicBool,
+}
+
+impl Drop for Place<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.stop.store(true, Ordering::Relaxed);
+        }
+        self.drawing.fetch_sub(1, Ordering::AcqRel);
+        self.ended.notify_all();
     }
 }
 

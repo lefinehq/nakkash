@@ -44,10 +44,13 @@ fn each_in_layer(
     let width = usize::from(pixels.width());
     par::each(pixels.data_mut(), |i, pixel| {
         let coverage = pixel[3];
-        if coverage <= 0.0 {
+        if coverage.is_nan() || coverage <= 0.0 {
             return;
         }
         let at = back * Point::new((i % width) as f64 + 0.5, (i / width) as f64 + 0.5);
+        if !at.x.is_finite() || !at.y.is_finite() {
+            return;
+        }
         let straight = [
             pixel[0] / coverage,
             pixel[1] / coverage,
