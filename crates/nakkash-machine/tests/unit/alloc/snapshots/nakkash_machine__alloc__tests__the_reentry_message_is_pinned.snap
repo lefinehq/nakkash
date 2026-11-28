@@ -1,0 +1,5 @@
+---
+source: crates/nakkash-machine/src/alloc/../../tests/unit/alloc/mod.rs
+expression: "String::from_utf8_lossy(REENTERED)"
+---
+nakkash-machine: the allocator was entered from inside itself: a keep function allocated, or the block store was trimmed from inside the allocator
