@@ -14,7 +14,7 @@ use vello_cpu::{
 
 use crate::accel::{Accelerator, Amount, Share, Surface, Texels, held_by};
 use crate::blend::BlendMode;
-use crate::effect::{Drawing, Effect, EffectContext, Input, Move, Space};
+use crate::effect::{Drawing, Effect, EffectContext, Input, Move, Reach, Space};
 use crate::homography::Homography;
 use crate::image::Image;
 use crate::list::{
@@ -23,7 +23,7 @@ use crate::list::{
 };
 use crate::par;
 use crate::pixels::Pixels;
-use crate::projected::{self, Buffer, Extent, Plan};
+use crate::projected::{self, Buffer, Extent, Filter, Landing, Plan};
 use crate::reads::Reads;
 use crate::style::{Color, DrawStyle};
 
@@ -962,6 +962,15 @@ impl<'a> Painter<'a> {
             let flat = Projection::new(Homography::from(layer.transform));
             return self.projected(layer, &flat, &steps, opacity, parent, own);
         }
+        // An effect that reads round each pixel, run on the canvas's grid,
+        // finds that grid cut where the canvas ends: what it gives near the
+        // edge would hang on how far the canvas goes. Such a layer is drawn
+        // on a grid of the canvas's own px, widened past the edges by what
+        // its effects read, and moves among them bring in, and laid back
+        // px for px.
+        if let Some(grid) = self.widened_grid(layer, transform) {
+            return self.widened(layer, &steps, opacity, parent, transform, grid);
+        }
         // On the float canvas, a layer that makes pixels is laid in floats,
         // and so is one that blends otherwise than source-over with what
         // the canvas holds; one inside a layer open in the context blends
@@ -1023,6 +1032,128 @@ impl<'a> Painter<'a> {
         let canvas = Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
         let inside = landed.union(canvas) == canvas;
         (!inside).then(|| Projection::new(Homography::from(layer.transform)))
+    }
+
+    /// The grid a flat layer whose effects on its pixels read a few px
+    /// round each pixel, or move them, is drawn on when what they read
+    /// passes the canvas's edges: `[left, top, width, height]`, the whole
+    /// px added before the canvas each way and the grid's size. What the
+    /// grid must hold is found from the canvas back through the effects:
+    /// each that reads round a pixel widens it by how far, each move takes
+    /// it to where its px come from. It is cut to where the layer draws at
+    /// any step, beyond which all is clear. `None` when the canvas's own
+    /// grid holds all they read, or some effect reads its whole box.
+    fn widened_grid(&self, layer: &Layer, transform: Affine) -> Option<[u16; 4]> {
+        if !layer.motion.is_empty() || !makes_pixels(layer) {
+            return None;
+        }
+        let effects = &layer.effects;
+        let (on_grid, masks) = match effects.iter().rposition(Effect::pins) {
+            Some(last) => (&effects[last + 1..], 0.0),
+            None => {
+                let moves = effects
+                    .iter()
+                    .take_while(|e| e.movement().is_some())
+                    .count();
+                (&effects[moves..], projected::mask_reach(&layer.masks))
+            }
+        };
+        let invertible = |a: Affine| {
+            let det = a.determinant();
+            det.is_finite() && det.abs() > 1e-12
+        };
+        if !invertible(transform) {
+            return None;
+        }
+        let [a, b, c, d, ..] = transform.as_coeffs();
+        let stretch = (a * a + b * b + c * c + d * d).sqrt();
+        let (w, h) = (f64::from(self.width), f64::from(self.height));
+        let canvas = Rect::new(0.0, 0.0, w, h);
+        let mut needed = canvas;
+        for effect in on_grid.iter().rev() {
+            if let Some(movement) = effect.movement() {
+                let moved = transform * movement.transform * transform.inverse();
+                if !invertible(moved) {
+                    return None;
+                }
+                needed = needed.union(moved.inverse().transform_rect_bbox(needed));
+                continue;
+            }
+            match effect.reach() {
+                Reach::Within(by) if !effect.pins() => {
+                    let by = f64::from(by) * stretch;
+                    needed = needed.inflate(by, by);
+                }
+                _ => return None,
+            }
+        }
+        let by = masks * stretch;
+        needed = needed.inflate(by, by);
+        let finite = [needed.x0, needed.y0, needed.x1, needed.y1]
+            .iter()
+            .all(|v| v.is_finite());
+        if !finite || needed == canvas {
+            return None;
+        }
+        // Where the layer draws at any step of its effects.
+        let mut drawn: Option<Rect> = None;
+        for k in 0..=effects.len() {
+            match projected::extent_of(layer, &effects[..k]) {
+                Extent::Nothing => {}
+                Extent::Everywhere => {
+                    drawn = Some(needed);
+                    break;
+                }
+                Extent::Box(b) => {
+                    let landed = transform.transform_rect_bbox(b);
+                    drawn = Some(drawn.map_or(landed, |d| d.union(landed)));
+                }
+            }
+        }
+        let grid = needed.intersect(drawn?.inflate(2.0, 2.0));
+        if !(grid.width() >= 0.0 && grid.height() >= 0.0) {
+            return None;
+        }
+        let out = |v: f64| if v > 0.0 { v.ceil() + 2.0 } else { 0.0 };
+        let (l, t) = (out(-grid.x0), out(-grid.y0));
+        let (r, bt) = (out(grid.x1 - w), out(grid.y1 - h));
+        if l + t + r + bt == 0.0 {
+            return None;
+        }
+        let wide = w + l + r;
+        let high = h + t + bt;
+        let most = f64::from(u16::MAX);
+        if !(wide <= most && high <= most) {
+            return None;
+        }
+        Some([l as u16, t as u16, wide as u16, high as u16])
+    }
+
+    /// Draws a flat layer on the widened grid `[left, top, width, height]`
+    /// ([`Painter::widened_grid`]), its own coordinates taken there by
+    /// `transform` moved by whole px, and lays it back onto the canvas px
+    /// for px, blended as a projected layer is.
+    fn widened(
+        &mut self,
+        layer: &Layer,
+        steps: &Steps<'_>,
+        opacity: f32,
+        parent: Affine,
+        transform: Affine,
+        [left, top, wide, high]: [u16; 4],
+    ) -> Result<()> {
+        let shift = Affine::translate((f64::from(left), f64::from(top)));
+        let local = shift * transform;
+        let landing = Landing {
+            to_buffer: Homography::from(shift),
+            landed: [0, 0, usize::from(self.width), usize::from(self.height)],
+            filter: Filter::Footprint,
+        };
+        let clip = layer.shown_clip();
+        let laid = self.laid_by(wide, high, &[landing], 1.0, |sub| {
+            sub.on_plane(layer, steps, clip.as_ref(), local)
+        })?;
+        self.lay_drawn(layer, laid, opacity, parent)
     }
 
     /// Draws an isolated flat layer on the float canvas: its content and
@@ -1094,6 +1225,18 @@ impl<'a> Painter<'a> {
         let laid = self.laid(&plan, &maps, |sub| {
             sub.on_plane(layer, steps, clip.as_ref(), plan.local)
         })?;
+        self.lay_drawn(layer, laid, opacity, parent)
+    }
+
+    /// Lays `laid`, a layer's pixels on the canvas's grid, with `opacity`,
+    /// its blend mode and its matte, as a flat layer is.
+    fn lay_drawn(
+        &mut self,
+        layer: &Layer,
+        laid: Surface,
+        opacity: f32,
+        parent: Affine,
+    ) -> Result<()> {
         if self.floats() || layer.blend.laid_in_floats() {
             let matte = layer
                 .matte
@@ -1275,9 +1418,24 @@ impl<'a> Painter<'a> {
         maps: &[Homography],
         draw: impl FnOnce(&mut Painter<'a>) -> Result<()>,
     ) -> Result<Surface> {
+        let landings = plan.landings(maps);
+        let share = 1.0 / maps.len() as f32;
+        self.laid_by(plan.width, plan.height, &landings, share, draw)
+    }
+
+    /// What `draw` paints on a painter of a `bw` by `bh` buffer, laid onto
+    /// this painter's grid through each of `landings`, each adding `share`.
+    fn laid_by(
+        &self,
+        bw: u16,
+        bh: u16,
+        landings: &[Landing],
+        share: f32,
+        draw: impl FnOnce(&mut Painter<'a>) -> Result<()>,
+    ) -> Result<Surface> {
         let mut sub = Painter::new(
-            plan.width,
-            plan.height,
+            bw,
+            bh,
             self.options,
             self.level,
             Arc::clone(&self.reads),
@@ -1285,8 +1443,7 @@ impl<'a> Painter<'a> {
         );
         draw(&mut sub)?;
         let (width, height) = (self.width, self.height);
-        let landings = plan.landings(maps);
-        let share = 1.0 / maps.len() as f32;
+        let landings = landings.to_vec();
         let drawn = sub.finish()?;
         if let (Some(accel), true) = (self.accel, self.floats()) {
             let texels = match &drawn {
