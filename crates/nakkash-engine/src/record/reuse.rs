@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use nakkash_format::{Diagnostic, Kind, Place, Result};
 use serde::{Deserialize, Serialize};
 
-use super::sample::{RECORD, begin_sample, read_sample};
+use super::sample::{RECORD, begin_sample, read_pinned};
 use super::{FrameRecord, Hex128, Platform, SampleRecord};
 
 /// The identities of the lists one frame draws, each its
@@ -68,19 +68,32 @@ pub struct SampleReuse {
     /// The folder of the sample's record; in a reuse list, relative to the
     /// list's folder.
     pub dir: PathBuf,
+    /// The content hash of the bytes of the record the runner judged
+    /// ([`read_pinned`]): a record written over it since, by another build
+    /// that may draw the same lists to other bits, is refused.
+    pub record: Hex128,
     /// Each frame it vouches for, by index, with the identities of the
     /// lists it expects the frame to draw.
     pub frames: BTreeMap<usize, Identities>,
 }
 
 impl SampleReuse {
-    /// Vouches for every frame of `record`, in `dir`, as it was recorded:
-    /// what a runner writes for a build whose drawing code is unchanged.
-    pub fn every_frame(dir: PathBuf, record: &SampleRecord) -> SampleReuse {
+    /// Vouches for every frame of the record in `dir`, as it was recorded,
+    /// pinned to that record: what a runner writes for a build whose
+    /// drawing code is unchanged.
+    ///
+    /// # Errors
+    /// As [`read_pinned`].
+    pub fn every_frame(dir: PathBuf) -> Result<SampleReuse> {
+        let (record, pin) = read_pinned(&dir)?;
         let frames = (record.frames.iter())
             .map(|frame| (frame.index, frame.identities()))
             .collect();
-        SampleReuse { dir, frames }
+        Ok(SampleReuse {
+            dir,
+            record: pin,
+            frames,
+        })
     }
 }
 
@@ -147,6 +160,10 @@ pub struct Reusing {
     record: SampleRecord,
 }
 
+/// The accepted form of the record a reuse list names.
+const PINNED: &str =
+    "the record the runner judged; make the reuse list again from the records as they are";
+
 /// The accepted form of a record opened for reuse.
 const REUSABLE: &str =
     "a record made on this platform by a build that knows its commit; record the sample again";
@@ -155,29 +172,45 @@ const REUSABLE: &str =
 const VOUCHED: &str = "a record of the frame's lists at the frame's time; record the sample again, or leave the frame out of the reuse list";
 
 impl Reusing {
-    /// Opens the record in `reuse`'s folder ([`read_sample`]) for the
+    /// Opens the record in `reuse`'s folder ([`read_pinned`]) for the
     /// frames `reuse` vouches for.
     ///
     /// # Errors
-    /// As [`read_sample`]; or an invalid diagnostic, with the record's
-    /// path, when the build that made it did not know its commit, so
-    /// nothing says what code drew it, or when it was drawn on another
+    /// As [`read_pinned`]; or an invalid diagnostic, with the record's
+    /// path, when it is not the record `reuse` pins, so the runner never
+    /// judged it; when the build that made it did not know its commit, so
+    /// nothing says what code drew it; or when it was drawn on another
     /// platform, whose processor may draw the same lists to other bits.
     pub fn open(reuse: &SampleReuse) -> Result<Reusing> {
-        let record = read_sample(&reuse.dir)?;
+        let (record, pin) = read_pinned(&reuse.dir)?;
         let here = Platform::current();
-        let refusal = match (record.build.identified(), record.platform == here) {
-            (false, _) => {
-                Some("the record was made by a build that does not know its commit".to_owned())
-            }
-            (true, false) => Some(format!(
-                "the record was drawn on {}, and this machine is {here}",
-                record.platform
+        let refusal = match (
+            pin == reuse.record,
+            record.build.identified(),
+            record.platform == here,
+        ) {
+            (false, _, _) => Some((
+                format!(
+                    "the record hashes to {pin}, not to the {} the reuse list was made from",
+                    reuse.record
+                ),
+                PINNED,
             )),
-            (true, true) => None,
+            (true, false, _) => Some((
+                "the record was made by a build that does not know its commit".to_owned(),
+                REUSABLE,
+            )),
+            (true, true, false) => Some((
+                format!(
+                    "the record was drawn on {}, and this machine is {here}",
+                    record.platform
+                ),
+                REUSABLE,
+            )),
+            (true, true, true) => None,
         };
         match refusal {
-            Some(message) => Err(invalid(&reuse.dir, message, REUSABLE)),
+            Some((message, expected)) => Err(invalid(&reuse.dir, message, expected)),
             None => Ok(Reusing {
                 dir: reuse.dir.clone(),
                 vouched: reuse.frames.clone(),
@@ -263,26 +296,51 @@ fn invalid(dir: &Path, message: String, expected: &'static str) -> Diagnostic {
 }
 
 /// Begins a recording into `dir` ([`begin_sample`]), while frames may be
-/// read from the record `reusing` opened.
+/// read from the record in the folder `reused`, if any.
 ///
 /// # Errors
-/// An invalid diagnostic when `dir` is the folder `reusing` reads from,
-/// under any spelling of its path: beginning would remove the frames it is
-/// about to read. Otherwise as [`begin_sample`].
-pub fn begin_recording(dir: &Path, reusing: Option<&Reusing>) -> Result<()> {
-    if let Some(reusing) = reusing
-        && same_folder(dir, reusing.dir())
-    {
-        return Err(invalid(
-            reusing.dir(),
+/// An invalid diagnostic when `dir` is the folder `reused`, under any
+/// spelling of its path: beginning would remove the frames the run is about
+/// to read. Otherwise as [`begin_sample`].
+pub fn begin_recording(dir: &Path, reused: Option<&Path>) -> Result<()> {
+    refuse_same_folder(dir, reused)?;
+    begin_sample(dir)
+}
+
+/// Checks that a recording into `dir` has begun ([`begin_recording`]),
+/// while frames may be read from the record in the folder `reused`, if
+/// any: a frame is never written beside a record of another recording.
+///
+/// # Errors
+/// An invalid diagnostic when `dir` is the folder `reused`, under any
+/// spelling of its path, since a recording would write over the frames it
+/// reads; or when `dir` holds a record, since the recording has not begun.
+pub fn check_recording(dir: &Path, reused: Option<&Path>) -> Result<()> {
+    refuse_same_folder(dir, reused)?;
+    match dir.join(RECORD).exists() {
+        true => Err(invalid(
+            dir,
+            "the folder holds a record, and a recording into it has not begun".to_owned(),
+            "a recording begun with `begin_recording`, which removes the record first",
+        )),
+        false => Ok(()),
+    }
+}
+
+/// Refuses `dir` when it is the folder `reused`, under any spelling of its
+/// path.
+fn refuse_same_folder(dir: &Path, reused: Option<&Path>) -> Result<()> {
+    match reused {
+        Some(reused) if same_folder(dir, reused) => Err(invalid(
+            reused,
             format!(
                 "the run would record into {}, the folder it reuses",
                 dir.display()
             ),
             "a record folder other than the one the run reuses",
-        ));
+        )),
+        _ => Ok(()),
     }
-    begin_sample(dir)
 }
 
 /// Whether `a` and `b` are the same folder: both exist and resolve to one

@@ -29,9 +29,9 @@ use nakkash_format::{Diagnostic, Kind, Place, Result};
 use nakkash_hash::{ContentHasher, content_hash};
 use nakkash_raster::Image;
 use winnow::ascii::digit1;
-use winnow::combinator::alt;
+use winnow::combinator::{alt, opt};
 
-use super::files::write_whole;
+use super::files::{TMP, write_whole};
 use super::{Drawn, FrameRecord, Hex128};
 
 /// The tag of [`pixels_hash`].
@@ -271,10 +271,11 @@ fn file(dir: &Path, index: usize, ending: &str) -> PathBuf {
     dir.join(format!("f{index:04}.{ending}"))
 }
 
-/// Whether `name` is the name of a frame file [`file`] makes, of any frame:
-/// `f`, the frame's index, then one of the endings.
+/// Whether `name` is the name of a frame file [`file`] makes, of any frame,
+/// or of one written part way: `f`, the frame's index, one of the endings,
+/// and `.tmp` for a file written part way.
 pub(super) fn is_frame_file(name: &str) -> bool {
-    let grammar = ("f", digit1, ".", alt((OURS, COVERAGE, SHOWN)));
+    let grammar = ("f", digit1, ".", alt((OURS, COVERAGE, SHOWN)), opt(TMP));
     parse_whole(name, grammar, "frame file", "`f0000.cov`").is_ok()
 }
 

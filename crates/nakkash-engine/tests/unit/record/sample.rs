@@ -131,6 +131,8 @@ fn a_record_of_another_form_is_invalid(#[case] from: &str, #[case] to: &str) {
 #[case::index("index", |f: &mut FrameRecord| f.index = 0)]
 #[case::file("file", |f: &mut FrameRecord| f.file = "f0009.png".to_owned())]
 #[case::time("time", |f: &mut FrameRecord| f.time = f64::from_bits(f.diff.time.to_bits() + 1))]
+#[case::shown_without_mask("shown-without-mask", |f: &mut FrameRecord| f.shown = Some(Hex128(0x3333)))]
+#[case::mask_without_shown("mask-without-shown", |f: &mut FrameRecord| f.shown_mask = Some(Hex128(0x5555)))]
 fn a_record_whose_frames_disagree_is_invalid(
     #[case] name: &str,
     #[case] change: fn(&mut FrameRecord),
@@ -183,8 +185,9 @@ fn a_record_that_lacks_a_key_is_invalid(#[case] key: &str) {
 }
 
 /// A recording begins by removing the folder's record, then the frame
-/// files and the half-written files of recordings before it, and nothing
-/// else.
+/// files of recordings before it and the record's own files written part
+/// way, and nothing else: other tools' files, written part way or not,
+/// are theirs.
 #[test]
 fn beginning_a_recording_removes_the_record_and_stale_frames() {
     let dir = scratch("begin");
@@ -195,8 +198,8 @@ fn beginning_a_recording_removes_the_record_and_stale_frames() {
         "f0012.shown",
         "f12345.cov",
         "f0000.cov.tmp",
+        "f0001.ours.lz4.tmp",
         "record.json.tmp",
-        "scene.json.tmp",
     ];
     let kept = [
         "scene.json",
@@ -206,6 +209,10 @@ fn beginning_a_recording_removes_the_record_and_stale_frames() {
         "f0000.ours",
         "g0000.cov",
         "notes.txt",
+        "scene.json.tmp",
+        "other.tmp",
+        "f0000.png.tmp",
+        "f0000.cov.tmp.tmp",
     ];
     for name in stale.iter().chain(&kept) {
         fs::write(dir.join(name), b"frame").unwrap();
@@ -282,4 +289,28 @@ proptest! {
         prop_assert_eq!(read.frames[0].time.to_bits(), time.to_bits());
         prop_assert_eq!(read.frames[0].ms.draw.to_bits(), time.to_bits());
     }
+}
+
+/// A record read pinned gives the hash of the bytes it was read from: the
+/// same record gives the same hash, and any other bytes another.
+#[test]
+fn a_record_read_pinned_names_the_bytes_it_was_read_from() {
+    let dir = scratch("pinned");
+    write_sample(&dir, &record()).unwrap();
+    let (read, pin) = read_pinned(&dir).unwrap();
+    assert_eq!(read, record());
+    assert_eq!(read_pinned(&dir).unwrap().1, pin);
+    let mut other = record();
+    other.build.profile = "debug".to_owned();
+    write_sample(&dir, &other).unwrap();
+    assert_ne!(read_pinned(&dir).unwrap().1, pin);
+    // The same record, spelled otherwise, is other bytes too.
+    let path = dir.join(RECORD);
+    let compact: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let before = read_pinned(&dir).unwrap().1;
+    fs::write(&path, compact.to_string()).unwrap();
+    let (read, after) = read_pinned(&dir).unwrap();
+    assert_eq!(read, other);
+    assert_ne!(after, before);
 }

@@ -7,10 +7,11 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use nakkash_format::{Diagnostic, Kind, Place, Result};
+use nakkash_hash::content_hash;
 
-use super::SampleRecord;
-use super::files::{sync_dir, write_whole};
+use super::files::{sync_dir, temporary, write_whole};
 use super::pixels::is_frame_file;
+use super::{Hex128, SampleRecord};
 
 /// The name of a sample's record file in its folder.
 pub const RECORD: &str = "record.json";
@@ -22,8 +23,9 @@ const EXPECTED: &str = r#"a record written by this build: {"schema":"nakkash.Fid
 /// folder's record, for good, before any frame of the new recording is
 /// written, so a recording that stops part way leaves no record beside
 /// frames it does not name; then the frame files of the recordings before
-/// it, so none outlives them, and every half-written file (`.tmp`).
-/// Folders, and files of other names, are left as they are.
+/// it, so none outlives them, and the record's own files written part way
+/// (`record.json.tmp`, `f0000.cov.tmp`). Folders, and files of other names,
+/// are left as they are: the folder may hold what other tools wrote.
 ///
 /// # Errors
 /// An I/O diagnostic when the folder cannot be made or read, or a file in
@@ -32,23 +34,18 @@ pub fn begin_sample(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir).map_err(|e| Diagnostic::io("create", dir, &e))?;
     remove(&dir.join(RECORD))?;
     sync_dir(dir)?;
+    let half_written = temporary(Path::new(RECORD));
     let entries = fs::read_dir(dir).map_err(|e| Diagnostic::io("read", dir, &e))?;
     for entry in entries {
         let entry = entry.map_err(|e| Diagnostic::io("read", dir, &e))?;
         let path = entry.path();
-        if path.is_file() && stale(&path) {
+        let name = entry.file_name();
+        let ours = Path::new(&name) == half_written || name.to_str().is_some_and(is_frame_file);
+        if ours && path.is_file() {
             remove(&path)?;
         }
     }
     sync_dir(dir)
-}
-
-/// Whether the file at `path` is one a recording leaves behind: a frame
-/// file, or one written part way.
-fn stale(path: &Path) -> bool {
-    let name = path.file_name().map(|name| name.to_string_lossy());
-    let half_written = path.extension().is_some_and(|ending| ending == "tmp");
-    half_written || name.is_some_and(|name| is_frame_file(&name))
 }
 
 /// Removes the file at `path`, if there is one.
@@ -73,43 +70,68 @@ pub fn write_sample(dir: &Path, record: &SampleRecord) -> Result<()> {
     sync_dir(dir)
 }
 
+/// The tag of the hash of a record file's bytes ([`read_pinned`]).
+const PIN: &str = "nakkash.record.file";
+
 /// Reads the record in `dir`.
+///
+/// # Errors
+/// As [`read_pinned`].
+pub fn read_sample(dir: &Path) -> Result<SampleRecord> {
+    read_pinned(dir).map(|(record, _)| record)
+}
+
+/// Reads the record in `dir`, with the content hash of the bytes it was
+/// read from: what pins a reuse list to the one record its runner judged.
 ///
 /// # Errors
 /// An I/O diagnostic when `record.json` cannot be read, or an invalid one,
 /// with its path, when it is not a record of this form: another schema, a
 /// key it does not know or lacks, a value of another form, frames out of
-/// order, or a frame whose file or time differs from its errors'.
-pub fn read_sample(dir: &Path) -> Result<SampleRecord> {
+/// order, a frame whose file or time differs from its errors', or one that
+/// names a shown list without a shown mask, or a mask without a list.
+pub fn read_pinned(dir: &Path) -> Result<(SampleRecord, Hex128)> {
     let path = dir.join(RECORD);
     let invalid = |message: String| {
         Diagnostic::new(Kind::Invalid, message)
             .at(Place::Other(path.display().to_string()))
             .expected(EXPECTED)
     };
-    let text = fs::read_to_string(&path).map_err(|e| Diagnostic::io("read", &path, &e))?;
-    let record: SampleRecord = serde_json::from_str(&text).map_err(|e| invalid(e.to_string()))?;
+    let bytes = fs::read(&path).map_err(|e| Diagnostic::io("read", &path, &e))?;
+    let record: SampleRecord =
+        serde_json::from_slice(&bytes).map_err(|e| invalid(e.to_string()))?;
     for (i, frame) in record.frames.iter().enumerate() {
-        let wrong = if frame.index != i {
-            Some(format!("frame {i} has the index {}", frame.index))
-        } else if frame.file != frame.diff.file {
-            Some(format!(
-                "frame {i} names the file `{}`, its errors `{}`",
-                frame.file, frame.diff.file
-            ))
-        } else if frame.time.to_bits() != frame.diff.time.to_bits() {
-            Some(format!(
-                "frame {i} is at {}s, its errors at {}s",
-                frame.time, frame.diff.time
-            ))
-        } else {
-            None
-        };
-        if let Some(message) = wrong {
+        let checks = [
+            (
+                frame.index != i,
+                format!("frame {i} has the index {}", frame.index),
+            ),
+            (
+                frame.file != frame.diff.file,
+                format!(
+                    "frame {i} names the file `{}`, its errors `{}`",
+                    frame.file, frame.diff.file
+                ),
+            ),
+            (
+                frame.time.to_bits() != frame.diff.time.to_bits(),
+                format!(
+                    "frame {i} is at {}s, its errors at {}s",
+                    frame.time, frame.diff.time
+                ),
+            ),
+            (
+                frame.shown.is_some() != frame.shown_mask.is_some(),
+                format!(
+                    "frame {i} names a shown list without its mask, or a mask without its list"
+                ),
+            ),
+        ];
+        if let Some((_, message)) = checks.into_iter().find(|(wrong, _)| *wrong) {
             return Err(invalid(message));
         }
     }
-    Ok(record)
+    Ok((record, Hex128(content_hash(PIN, &bytes))))
 }
 
 #[cfg(test)]

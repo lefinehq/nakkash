@@ -26,7 +26,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use nakkash_format::{Address, Diagnostic, Kind, Result};
@@ -95,6 +95,12 @@ pub struct Sample {
     /// is measured over it in place of the project's.
     #[serde(default)]
     pub bg: Option<String>,
+    /// The folder of the manifest the sample was read from, which its
+    /// relative paths were read from; empty for a sample made otherwise.
+    /// Not part of the entry: its paths are hashed relative to it
+    /// ([`Sample::entry`]).
+    #[serde(skip)]
+    pub folder: PathBuf,
 }
 
 /// The codec floor of each reference frame of a sample, as its floor file
@@ -186,15 +192,23 @@ impl Floors {
 const ENTRY: &str = "nakkash.record.entry";
 
 impl Sample {
-    /// The content hash of this entry as serialised, every key with its
-    /// paths as read: a record names the entry it was made from, and a
-    /// sample whose entry changed is a changed sample, drawn whole.
+    /// The content hash of this entry as serialised, its paths relative to
+    /// its manifest's folder, so a manifest named another way (`m.json`,
+    /// `./m.json` or from the root) gives the same entry: a record names
+    /// the entry it was made from, and a sample whose entry changed is a
+    /// changed sample, drawn whole.
     ///
     /// # Errors
     /// An invalid diagnostic when the entry cannot be serialised, such as
     /// a path that is not Unicode.
     pub fn entry(&self) -> Result<Hex128> {
-        let bytes = serde_json::to_vec(self).map_err(|e| {
+        let mut entry = self.clone();
+        for path in entry.paths() {
+            if let Ok(relative) = path.strip_prefix(&self.folder) {
+                *path = relative.to_path_buf();
+            }
+        }
+        let bytes = serde_json::to_vec(&entry).map_err(|e| {
             Diagnostic::new(
                 Kind::Invalid,
                 format!("cannot hash the manifest entry: {e}"),
@@ -202,6 +216,33 @@ impl Sample {
             .expected("a manifest entry whose paths are Unicode")
         })?;
         Ok(Hex128(content_hash(ENTRY, &bytes)))
+    }
+
+    /// The paths a manifest names relative to its folder: the project, the
+    /// reference, the fonts and the floor file.
+    fn paths(&mut self) -> impl Iterator<Item = &mut PathBuf> {
+        [&mut self.project, &mut self.reference]
+            .into_iter()
+            .chain(&mut self.fonts)
+            .chain(&mut self.floor)
+    }
+
+    /// Refuses an id that is not one folder name: a sample's work and
+    /// record folders are named by it, and `""`, `.`, `..`, `a/b` or a path
+    /// from the root would name another folder.
+    ///
+    /// # Errors
+    /// An invalid diagnostic naming the id.
+    pub fn check_id(&self) -> Result<()> {
+        let mut parts = Path::new(&self.id).components();
+        match (parts.next(), parts.next()) {
+            (Some(Component::Normal(name)), None) if name == self.id.as_str() => Ok(()),
+            _ => Err(Diagnostic::new(
+                Kind::Invalid,
+                format!("the sample id `{}` is not one folder name", self.id),
+            )
+            .expected("an id that names one folder, such as `m001`, with no `/`, `.` or `..`")),
+        }
     }
 }
 
@@ -233,7 +274,8 @@ impl Manifest {
     ///
     /// # Errors
     /// An I/O diagnostic when the file cannot be read, or an invalid one
-    /// when it is not a manifest, with where.
+    /// when it is not a manifest, with where, or names a sample by an id
+    /// that is not one folder name ([`Sample::check_id`]).
     pub fn read(path: &Path) -> Result<Manifest> {
         let text = fs::read_to_string(path).map_err(|e| Diagnostic::io("read", path, &e))?;
         let mut manifest: Manifest = serde_json::from_str(&text).map_err(|e| {
@@ -243,11 +285,12 @@ impl Manifest {
         })?;
         let base = path.parent().unwrap_or(Path::new("."));
         for sample in &mut manifest.samples {
-            for path in [&mut sample.project, &mut sample.reference]
-                .into_iter()
-                .chain(&mut sample.fonts)
-                .chain(&mut sample.floor)
-            {
+            sample.check_id().map_err(|d| {
+                let message = format!("{}: {}", path.display(), d.message);
+                Diagnostic { message, ..d }
+            })?;
+            sample.folder = base.to_path_buf();
+            for path in sample.paths() {
                 *path = base.join(&*path);
             }
         }
@@ -432,19 +475,26 @@ pub fn measure(sample: &Sample, work: &Path, options: &MeasureOptions) -> Result
         let message = format!("sample `{}`: {}", sample.id, d.message);
         Diagnostic { message, ..d }
     };
-    let entry = sample.entry().map_err(under)?;
-    let opened = (options.reuse.as_ref())
-        .and_then(|reuse| reuse.samples.get(&sample.id))
-        .map(Reusing::open)
+    let listed = (options.reuse.as_ref()).and_then(|reuse| reuse.samples.get(&sample.id));
+    // The recording begins first, so a sample that fails anywhere leaves no
+    // record, not even the one of the run before it.
+    let recording = match &options.record {
+        Some(record) => {
+            sample.check_id().map_err(under)?;
+            let dir = record.dir.join(&sample.id);
+            begin_recording(&dir, listed.map(|listed| listed.dir.as_path())).map_err(under)?;
+            Some((dir, record))
+        }
+        None => None,
+    };
+    // Only a run that records or reuses names its entry.
+    let entry = (recording.is_some() || listed.is_some())
+        .then(|| sample.entry())
         .transpose()
         .map_err(under)?;
-    let recording = (options.record.as_ref()).map(|record| (record.dir.join(&sample.id), record));
-    if let Some((dir, _)) = &recording {
-        begin_recording(dir, opened.as_ref()).map_err(under)?;
-    }
     // A record made from another entry is of another sample: drawn whole.
-    let reusing = (opened)
-        .filter(|reusing| reusing.record().entry == entry)
+    let reusing = (listed.map(Reusing::open).transpose().map_err(under)?)
+        .filter(|reusing| Some(reusing.record().entry) == entry)
         .map(Arc::new);
     let dir = work.join(&sample.id);
     fs::create_dir_all(&dir).map_err(|e| under(Diagnostic::io("create", &dir, &e)))?;
@@ -526,7 +576,8 @@ pub fn measure(sample: &Sample, work: &Path, options: &MeasureOptions) -> Result
         }),
         bg: sample.bg.clone(),
     };
-    if let (Some((dir, recording)), Some(frames)) = (recording, recorded.frames) {
+    if let (Some((dir, recording)), Some(frames), Some(entry)) = (recording, recorded.frames, entry)
+    {
         let record = SampleRecord {
             schema: Schema::V1,
             sample: sample.id.clone(),

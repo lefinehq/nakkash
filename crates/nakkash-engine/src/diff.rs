@@ -30,7 +30,7 @@ use nakkash_raster::Image;
 use serde::{Deserialize, Serialize};
 
 use crate::Session;
-use crate::record::{FrameRecord, Reusing, begin_recording};
+use crate::record::{FrameRecord, Reusing, check_recording};
 
 mod frames;
 
@@ -54,9 +54,10 @@ pub struct DiffOptions {
     pub ignore: Vec<Address>,
     /// A folder to record each frame into, if any: its pixels and masks, as
     /// files ([`write_frame`](crate::record::write_frame)), and its record,
-    /// returned by [`Session::diff_recorded`]. The folder's record is
-    /// removed first ([`begin_sample`](crate::record::begin_sample)); the
-    /// caller writes the new one once it has measured the whole sample.
+    /// returned by [`Session::diff_recorded`]. The caller begins the
+    /// recording first ([`begin_recording`](crate::record::begin_recording)),
+    /// so the folder holds no record, and writes the new one once it has
+    /// measured the whole sample.
     pub record: Option<PathBuf>,
     /// A sample's record whose frames may stand in for draws, if any: a
     /// frame is read from it in place of drawing it when the runner vouches
@@ -271,7 +272,8 @@ impl Session {
     /// scene's size, or falls past the scene's end; when a frame's record
     /// cannot be written, or a frame the options reuse cannot be read
     /// ([`Reusing::frame`], [`read_ours`](crate::record::read_ours)); when
-    /// the run would record into the folder it reuses; or as
+    /// the recording has not begun, or would be into the folder the run
+    /// reuses ([`check_recording`]); or as
     /// [`Session::render_with`].
     pub fn diff_recorded(&self, options: &DiffOptions) -> Result<RecordedDiff> {
         let fps = self.scene().root.fps;
@@ -295,7 +297,7 @@ impl Session {
             .expected("as many reference frames as the scene lasts, or a later `--start`"));
         }
         if let Some(dir) = &options.record {
-            begin_recording(dir, options.reuse.as_deref())?;
+            check_recording(dir, options.reuse.as_deref().map(Reusing::dir))?;
         }
         // The ignored layers are hidden from what is measured, and this
         // session still draws them, to tell where the content window ends.

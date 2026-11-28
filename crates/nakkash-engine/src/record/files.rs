@@ -39,10 +39,13 @@ pub(super) fn write_whole(
         })
 }
 
+/// What a temporary file's name adds to the name of the file it becomes.
+pub(super) const TMP: &str = ".tmp";
+
 /// `path` with `.tmp` added, such as `record.json.tmp`.
 pub(super) fn temporary(path: &Path) -> PathBuf {
     let mut name = OsString::from(path.as_os_str());
-    name.push(".tmp");
+    name.push(TMP);
     PathBuf::from(name)
 }
 

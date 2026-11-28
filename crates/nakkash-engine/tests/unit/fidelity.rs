@@ -9,7 +9,11 @@ use pretty_assertions::assert_eq;
 
 use super::*;
 use crate::diff::tests::renders;
-use crate::record::{Build, Platform, RECORD, Reuse, ReuseSchema, SampleReuse, read_sample};
+use rstest::rstest;
+
+use crate::record::{
+    Build, Hex128, Platform, RECORD, Reuse, ReuseSchema, SampleReuse, read_sample,
+};
 
 /// A fixture project with one star, which the import does not support.
 const STAR: &str = concat!(
@@ -116,6 +120,7 @@ fn a_sample_measured_against_its_own_frames_has_no_error() {
         excluded: None,
         floor: None,
         bg: None,
+        folder: PathBuf::new(),
     };
     // The reference: the imported scene itself, drawn every two seconds,
     // as a sample at half a frame a second compares it.
@@ -211,6 +216,7 @@ fn a_sample_is_measured_over_the_background_its_reference_shows() {
         excluded: None,
         floor: None,
         bg: None,
+        folder: PathBuf::new(),
     };
     // Over the project's background, everything the star leaves uncovered
     // fails.
@@ -374,6 +380,7 @@ fn sample(id: &str, excluded: Option<&str>) -> Sample {
         excluded: excluded.map(str::to_owned),
         floor: None,
         bg: None,
+        folder: PathBuf::new(),
     }
 }
 
@@ -746,8 +753,7 @@ fn reusing_all(dir: &Path, ids: &[&str]) -> MeasureOptions {
         .iter()
         .map(|id| {
             let sample = dir.join(id);
-            let record = read_sample(&sample).unwrap();
-            ((*id).to_owned(), SampleReuse::every_frame(sample, &record))
+            ((*id).to_owned(), SampleReuse::every_frame(sample).unwrap())
         })
         .collect();
     MeasureOptions {
@@ -912,15 +918,122 @@ fn a_sample_is_known_by_its_whole_entry() {
     assert_eq!(base.entry().unwrap(), sample("s1", None).entry().unwrap());
 }
 
+/// The entry is hashed only by a run that records or reuses: a plain run
+/// of a sample whose paths are not Unicode is measured as it always was,
+/// and fails, if at all, as it always did.
 #[cfg(unix)]
 #[test]
-fn an_entry_whose_path_is_not_unicode_is_not_hashed() {
+fn an_entry_whose_path_is_not_unicode_is_hashed_only_when_recording() {
     use std::os::unix::ffi::OsStrExt;
+    let dir = scratch("not-unicode");
+    let work = dir.join("work");
     let sample = Sample {
-        project: PathBuf::from(std::ffi::OsStr::from_bytes(b"\xff.aep")),
-        ..sample("s1", None)
+        project: dir.join(std::ffi::OsStr::from_bytes(b"\xff.aep")),
+        ..star_sample(&dir)
     };
     let error = sample.entry().unwrap_err();
     assert_eq!(error.kind, Kind::Invalid, "{error}");
     assert!(error.expected.is_some());
+    // A plain run gets past the entry, to the import of a missing project.
+    let plain = super::measure(&sample, &work, &MeasureOptions::default()).unwrap_err();
+    assert!(!plain.message.contains("manifest entry"), "{plain}");
+    // A run that records names its entry, and cannot.
+    let records = dir.join("records");
+    let recorded = super::measure(&sample, &work, &recording(&records)).unwrap_err();
+    assert!(recorded.message.contains("manifest entry"), "{recorded}");
+}
+
+/// A sample's id names its work and record folders, so it is one folder
+/// name, and a manifest naming another way is refused.
+#[rstest]
+#[case::empty("")]
+#[case::here(".")]
+#[case::up("..")]
+#[case::nested("a/b")]
+#[case::absolute("/m001")]
+#[case::trailing("m001/")]
+fn a_manifest_refuses_an_id_that_is_not_one_folder_name(#[case] id: &str) {
+    let dir = scratch(&format!("id-{}", id.len()));
+    let path = dir.join("samples.json");
+    let manifest = serde_json::json!({
+        "samples": [{"id": id, "project": "a.aep", "reference": "r", "fps": 25}],
+    });
+    fs::write(&path, manifest.to_string()).unwrap();
+    let error = Manifest::read(&path).unwrap_err();
+    assert_eq!(error.kind, Kind::Invalid, "{error}");
+    assert!(error.message.contains("is not one folder name"), "{error}");
+    assert!(
+        error.message.starts_with(&path.display().to_string()),
+        "{error}"
+    );
+    let sample = Sample {
+        id: id.to_owned(),
+        ..sample("s1", None)
+    };
+    assert_eq!(sample.check_id().unwrap_err().kind, Kind::Invalid);
+}
+
+/// A sample made in code with such an id is refused before it records, so
+/// a recording never begins in another folder than its own.
+#[test]
+fn a_sample_whose_id_is_not_a_folder_name_does_not_record() {
+    let dir = scratch("id-record");
+    let records = dir.join("records");
+    fs::create_dir_all(&records).unwrap();
+    fs::write(records.join("f0000.cov"), b"not ours").unwrap();
+    let here = Sample {
+        id: ".".to_owned(),
+        ..sample("s1", None)
+    };
+    let error = super::measure(&here, &dir.join("work"), &recording(&records)).unwrap_err();
+    assert_eq!(error.kind, Kind::Invalid, "{error}");
+    assert!(records.join("f0000.cov").exists(), "nothing removed");
+    assert!(sample("m001", None).check_id().is_ok());
+}
+
+/// A manifest named another way, from here, with `./` or from the root,
+/// gives each sample the same entry, so its records stay reusable.
+#[test]
+fn the_entry_does_not_depend_on_how_the_manifest_is_named() {
+    let dir = scratch("spelling");
+    let path = dir.join("m.json");
+    let manifest = serde_json::json!({
+        "samples": [{"id": "s1", "project": "p/a.aep", "fonts": ["fonts"],
+            "reference": "refs/s1", "fps": 25, "floor": "floor.json"}],
+    });
+    fs::write(&path, manifest.to_string()).unwrap();
+    // The manifest's path from the current folder, without changing it:
+    // up to the root, then down to the manifest.
+    let here = std::env::current_dir().unwrap();
+    let ups = here.components().count() - 1;
+    let relative = std::iter::repeat_n("..", ups)
+        .collect::<PathBuf>()
+        .join(path.strip_prefix("/").unwrap());
+    let spellings = [
+        relative.clone(),
+        Path::new(".").join(&relative),
+        path.clone(),
+        dir.join(".").join("m.json"),
+    ];
+    let entries: Vec<Hex128> = spellings
+        .iter()
+        .map(|spelling| {
+            Manifest::read(spelling).unwrap().samples[0]
+                .entry()
+                .unwrap()
+        })
+        .collect();
+    assert!(entries.iter().all(|e| *e == entries[0]), "{entries:?}");
+    let read = Manifest::read(&path).unwrap();
+    assert_eq!(
+        read.samples[0].project,
+        dir.join("p/a.aep"),
+        "paths resolve"
+    );
+    // A changed path changes it.
+    let moved = Sample {
+        project: dir.join("p/b.aep"),
+        ..read.samples[0].clone()
+    };
+    assert_ne!(moved.entry().unwrap(), entries[0]);
 }

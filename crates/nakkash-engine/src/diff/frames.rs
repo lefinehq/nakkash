@@ -86,7 +86,9 @@ impl Session {
     /// The coverage pass of frame `index`, at `time` seconds: where the
     /// scene draws then, and where `shown` draws, if given; each its bare
     /// list drawn once, or read from the record `options` reuse when it
-    /// vouches for the frame.
+    /// vouches for the frame. A run that neither records nor reuses
+    /// computes no identity, and builds and draws in the order it always
+    /// has, so it fails as it always has.
     pub(crate) fn cover<'a>(
         &self,
         shown: Option<&Session>,
@@ -95,52 +97,75 @@ impl Session {
         time: f64,
     ) -> Result<(Masks, Origin<'a>)> {
         let frame = time * self.scene().root.fps;
-        let identity = self.identity()?;
         let list = self.display_list(frame)?;
-        let identify = options.record.is_some() || options.reuse.is_some();
-        let ours = identify.then(|| identity(&list));
-        let measured = bare(list);
-        let shown = (shown.map(|session| session.display_list(frame).map(bare))).transpose()?;
-        let identities = ours.map(|ours| Identities {
-            ours,
-            bare: identity(&measured),
-            shown: shown.as_ref().map(&identity),
-        });
-        let reused = match (&options.reuse, &identities) {
-            (Some(reusing), Some(fresh)) => {
-                (reusing.frame(index, fresh, time)?).map(|record| Reused {
-                    dir: reusing.dir(),
-                    record,
-                })
-            }
-            _ => None,
-        };
-        let ((coverage, shown), ms) = match reused {
-            Some(reused) => {
-                let (width, height) = self.canvas()?;
-                let masks = read_masks(reused.dir, reused.record, width, height)?;
-                (masks, reused.record.ms)
-            }
-            None => {
-                let (coverage, coverage_ms) = timed(|| self.coverage(&measured))?;
-                let (shown, shown_ms) = match &shown {
-                    Some(list) => timed(|| self.coverage(list).map(Some))?,
-                    None => (None, 0.0),
+        let shown_list =
+            || (shown.map(|session| session.display_list(frame).map(bare))).transpose();
+        match options.record.is_some() || options.reuse.is_some() {
+            false => {
+                let (masks, ms) = self.draw_masks(&bare(list), shown_list)?;
+                let origin = Origin {
+                    identities: None,
+                    reused: None,
+                    ms,
                 };
-                let ms = Times {
-                    draw: 0.0,
-                    coverage: coverage_ms,
-                    shown: shown_ms,
-                };
-                ((coverage, shown), ms)
+                Ok((masks, origin))
             }
+            true => {
+                let identity = self.identity()?;
+                let ours = identity(&list);
+                let measured = bare(list);
+                let shown = shown_list()?;
+                let identities = Identities {
+                    ours,
+                    bare: identity(&measured),
+                    shown: shown.as_ref().map(&identity),
+                };
+                let reused = match &options.reuse {
+                    Some(reusing) => {
+                        (reusing.frame(index, &identities, time)?).map(|record| Reused {
+                            dir: reusing.dir(),
+                            record,
+                        })
+                    }
+                    None => None,
+                };
+                let (masks, ms) = match reused {
+                    Some(reused) => {
+                        let (width, height) = self.canvas()?;
+                        let (coverage, shown) =
+                            read_masks(reused.dir, reused.record, width, height)?;
+                        (Masks { coverage, shown }, reused.record.ms)
+                    }
+                    None => self.draw_masks(&measured, || Ok(shown))?,
+                };
+                let origin = Origin {
+                    identities: Some(identities),
+                    reused,
+                    ms,
+                };
+                Ok((masks, origin))
+            }
+        }
+    }
+
+    /// The masks of a frame drawn, and how long they took: the coverage of
+    /// the bare list `measured`, then the bare list `shown` gives, if any.
+    fn draw_masks(
+        &self,
+        measured: &Frame,
+        shown: impl FnOnce() -> Result<Option<Frame>>,
+    ) -> Result<(Masks, Times)> {
+        let (coverage, coverage_ms) = timed(|| self.coverage(measured))?;
+        let (shown, shown_ms) = match shown()? {
+            Some(list) => timed(|| self.coverage(&list).map(Some))?,
+            None => (None, 0.0),
         };
-        let origin = Origin {
-            identities,
-            reused,
-            ms,
+        let ms = Times {
+            draw: 0.0,
+            coverage: coverage_ms,
+            shown: shown_ms,
         };
-        Ok((Masks { coverage, shown }, origin))
+        Ok((Masks { coverage, shown }, ms))
     }
 
     /// Reference frame `index`, read once, and the scene at `time` seconds,

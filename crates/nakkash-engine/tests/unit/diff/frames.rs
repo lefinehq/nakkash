@@ -13,7 +13,7 @@ use rstest::rstest;
 use crate::diff::tests::{SCENE, options, references, renders, scratch, session};
 use crate::record::{
     Build, FrameRecord, Hex128, Identities, Platform, RECORD, Reusing, SampleRecord, SampleReuse,
-    Schema, read_frame, read_sample, write_sample,
+    Schema, begin_recording, read_frame, read_sample, write_sample,
 };
 use crate::{Diff, DiffOptions, Session};
 use nakkash_format::Kind;
@@ -41,10 +41,11 @@ fn ignoring(opts: DiffOptions, ignore: &[&str]) -> DiffOptions {
     }
 }
 
-/// Diffs `scene` with `opts`, recording into `dir`, and writes the record
-/// as a fidelity run does once the sample has measured; the diff and the
-/// frames' records.
+/// Begins a recording into `dir`, diffs `scene` with `opts` recording into
+/// it, and writes the record as a fidelity run does once the sample has
+/// measured; the diff and the frames' records.
 fn record(scene: &Session, opts: &DiffOptions, dir: &Path) -> (Diff, Vec<FrameRecord>) {
+    begin_recording(dir, opts.reuse.as_deref().map(Reusing::dir)).unwrap();
     let recorded = scene
         .diff_recorded(&DiffOptions {
             record: Some(dir.to_path_buf()),
@@ -74,14 +75,17 @@ fn reusing(opts: &DiffOptions, reuse: &SampleReuse) -> DiffOptions {
 
 /// The runner's list vouching for every frame of the record in `dir`.
 fn every_frame(dir: &Path) -> SampleReuse {
-    SampleReuse::every_frame(dir.to_path_buf(), &read_sample(dir).unwrap())
+    SampleReuse::every_frame(dir.to_path_buf()).unwrap()
 }
 
-/// Rewrites the record in `dir` with `change`.
-fn rewrite(dir: &Path, change: impl FnOnce(&mut SampleRecord)) {
+/// Rewrites the record in `dir` with `change`, and pins `reuse` to the
+/// record as it is now, vouching for the frames it vouched for: a runner
+/// that judged the changed record.
+fn rewrite(dir: &Path, reuse: &mut SampleReuse, change: impl FnOnce(&mut SampleRecord)) {
     let mut sample = read_sample(dir).unwrap();
     change(&mut sample);
     write_sample(dir, &sample).unwrap();
+    reuse.record = every_frame(dir).record;
 }
 
 /// A diff and how many renders it drew.
@@ -254,8 +258,8 @@ fn a_reused_frame_keeps_its_time() {
     let opts = options(frames, 10.0 / 4.5);
     let dir = scratch("time");
     record(&scene, &opts, &dir);
-    let reuse = every_frame(&dir);
-    rewrite(&dir, |sample| {
+    let mut reuse = every_frame(&dir);
+    rewrite(&dir, &mut reuse, |sample| {
         let frame = &mut sample.frames[1];
         frame.time += 0.05;
         frame.diff.time = frame.time;
@@ -274,8 +278,8 @@ fn a_vouched_frame_whose_record_disagrees_is_an_error() {
     let opts = options(frames, 10.0 / 4.5);
     let dir = scratch("disagrees");
     record(&scene, &opts, &dir);
-    let reuse = every_frame(&dir);
-    rewrite(&dir, |sample| sample.frames[2].bare = Hex128(1));
+    let mut reuse = every_frame(&dir);
+    rewrite(&dir, &mut reuse, |sample| sample.frames[2].bare = Hex128(1));
     let error = scene.diff(&reusing(&opts, &reuse)).unwrap_err();
     assert_eq!(error.kind, Kind::Invalid, "{error}");
     assert!(error.message.starts_with("frame 2 "), "{error}");
@@ -321,6 +325,27 @@ fn a_run_never_records_into_the_folder_it_reuses() {
     assert_eq!(error.kind, Kind::Invalid, "{error}");
     assert!(dir.join(RECORD).exists(), "the record is kept");
     assert!(read_sample(&dir).is_ok());
+}
+
+/// Frames are never written beside the record of a recording before:
+/// the caller begins the recording first.
+#[test]
+fn a_recording_that_has_not_begun_is_refused() {
+    let scene = session(SCENE);
+    let frames = references("unbegun-ref", &scene, &[0.0, 5.0]);
+    let opts = options(frames, 2.0);
+    let dir = scratch("unbegun");
+    record(&scene, &opts, &dir);
+    let again = DiffOptions {
+        record: Some(dir.clone()),
+        ..opts
+    };
+    let mut error = None;
+    let n = renders(|| error = Some(scene.diff_recorded(&again).unwrap_err()));
+    let error = error.unwrap();
+    assert_eq!(error.kind, Kind::Invalid, "{error}");
+    assert_eq!(n, 0, "refused before any draw");
+    assert!(read_sample(&dir).is_ok(), "the record is kept");
 }
 
 /// A recording begins by clearing its folder: a frame file of a longer

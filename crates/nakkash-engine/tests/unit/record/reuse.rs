@@ -10,7 +10,7 @@ use rstest::rstest;
 use super::*;
 use crate::diff::{Error, FrameDiff};
 use crate::record::tests::scratch;
-use crate::record::{Build, Schema, Times, write_sample};
+use crate::record::{Build, Schema, Times, read_pinned, write_sample};
 
 /// The path of the scratch folder for `name`, made or not.
 fn scratch_of(name: &str) -> PathBuf {
@@ -79,13 +79,15 @@ fn record() -> SampleRecord {
 }
 
 /// [`record`] changed by `change`, written into a scratch folder for
-/// `name`, and the runner's list vouching for every frame of [`record`].
+/// `name`, and a runner's list pinned to what was written, vouching for
+/// every frame of [`record`] as it was before the change.
 fn written(name: &str, change: impl FnOnce(&mut SampleRecord)) -> (PathBuf, SampleReuse) {
     let dir = scratch(&format!("reuse-{name}"));
     let mut changed = record();
     change(&mut changed);
     write_sample(&dir, &changed).unwrap();
-    let reuse = SampleReuse::every_frame(dir.clone(), &record());
+    let mut reuse = SampleReuse::every_frame(dir.clone()).unwrap();
+    reuse.frames = (0..3).map(|i| (i, identities(i))).collect();
     (dir, reuse)
 }
 
@@ -99,20 +101,46 @@ fn reuse_json(platform: &Platform, dir: &str) -> String {
     serde_json::json!({
         "schema": "nakkash.FidelityReuse.1",
         "platform": platform,
-        "samples": {"m001": {"dir": dir, "frames": {"1": identities(1)}}},
+        "samples": {"m001": {"dir": dir, "record": Hex128(0xf), "frames": {"1": identities(1)}}},
     })
     .to_string()
 }
 
 #[test]
 fn the_runner_may_vouch_for_every_frame_of_a_record() {
-    let reuse = SampleReuse::every_frame(PathBuf::from("r/m001"), &record());
-    assert_eq!(reuse.dir, PathBuf::from("r/m001"));
+    let dir = scratch("reuse-every");
+    write_sample(&dir, &record()).unwrap();
+    let reuse = SampleReuse::every_frame(dir.clone()).unwrap();
+    assert_eq!(reuse.dir, dir);
+    assert_eq!(reuse.record, read_pinned(&dir).unwrap().1);
     assert_eq!(
         reuse.frames,
         BTreeMap::from([(0, identities(0)), (1, identities(1)), (2, identities(2))])
     );
     assert_eq!(frame(1).identities(), identities(1));
+    let missing = scratch("reuse-every-missing");
+    assert_eq!(
+        SampleReuse::every_frame(missing).unwrap_err().kind,
+        Kind::Io
+    );
+}
+
+/// The list pins the record its runner judged: one written over it since,
+/// by another build that draws the same lists, is refused, though every
+/// identity still agrees.
+#[test]
+fn a_record_recorded_again_after_the_list_was_made_is_refused() {
+    let (dir, reuse) = written("again", |_| {});
+    let mut again = record();
+    again.build.commit = Some("fedcba9876543210fedcba9876543210fedcba98".to_owned());
+    write_sample(&dir, &again).unwrap();
+    let error = Reusing::open(&reuse).unwrap_err();
+    assert_eq!(error.kind, Kind::Invalid, "{error}");
+    let place = error.path.as_ref().expect("a path").to_string();
+    assert_eq!(place, dir.join(RECORD).display().to_string());
+    // A list made from the record as it is now opens it.
+    let fresh = SampleReuse::every_frame(dir).unwrap();
+    assert_eq!(Reusing::open(&fresh).unwrap().record(), &again);
 }
 
 #[test]
@@ -154,6 +182,7 @@ fn a_reuse_list_from_another_platform_is_refused() {
 #[case::other_schema("FidelityReuse.1", "FidelityReuse.2")]
 #[case::missing_shown(",\"shown\":null", "")]
 #[case::not_an_index("{\"0\":", "{\"zero\":")]
+#[case::missing_record(",\"record\":\"0000000000000000000000000000000f\"", "")]
 #[case::not_json("\"samples\"", "\"samples")]
 fn a_reuse_list_of_another_form_is_invalid(#[case] from: &str, #[case] to: &str) {
     let dir = scratch(&format!("reuse-form-{}", from.len() + to.len()));
@@ -161,7 +190,7 @@ fn a_reuse_list_of_another_form_is_invalid(#[case] from: &str, #[case] to: &str)
     let json = serde_json::json!({
         "schema": "nakkash.FidelityReuse.1",
         "platform": Platform::current(),
-        "samples": {"m001": {"dir": "m001", "frames": {"0": identities(0)}}},
+        "samples": {"m001": {"dir": "m001", "record": Hex128(0xf), "frames": {"0": identities(0)}}},
     })
     .to_string();
     assert!(json.contains(from), "{json}");
@@ -204,8 +233,8 @@ fn a_record_that_cannot_vouch_for_its_pixels_is_refused(
 
 #[test]
 fn a_folder_without_a_record_is_an_io_error() {
-    let dir = scratch("reuse-no-record");
-    let reuse = SampleReuse::every_frame(dir, &record());
+    let (dir, reuse) = written("no-record", |_| {});
+    fs::remove_file(dir.join(RECORD)).unwrap();
     assert_eq!(Reusing::open(&reuse).unwrap_err().kind, Kind::Io);
 }
 
@@ -261,7 +290,7 @@ fn a_frame_whose_shown_list_went_away_is_drawn() {
 #[rstest]
 #[case::ours("ours", |f: &mut FrameRecord| f.ours = Hex128(1))]
 #[case::bare("bare", |f: &mut FrameRecord| f.bare = Hex128(1))]
-#[case::shown("shown", |f: &mut FrameRecord| f.shown = None)]
+#[case::shown("shown", |f: &mut FrameRecord| { f.shown = None; f.shown_mask = None; })]
 #[case::time("time", |f: &mut FrameRecord| { f.time += 0.05; f.diff.time = f.time; })]
 fn a_vouched_frame_the_record_disagrees_with_is_invalid(
     #[case] name: &str,
@@ -296,20 +325,39 @@ fn a_vouched_frame_the_record_does_not_hold_is_invalid() {
 #[test]
 fn a_recording_begins_anywhere_but_in_the_folder_it_reuses() {
     let reusing = opened("begin");
+    let reused = Some(reusing.dir());
     let other = scratch("reuse-begin-other");
     fs::write(other.join("f0000.cov"), b"stale").unwrap();
-    begin_recording(&other, Some(&reusing)).unwrap();
+    begin_recording(&other, reused).unwrap();
     assert!(!other.join("f0000.cov").exists());
-    begin_recording(&other.join("new"), Some(&reusing)).unwrap();
+    begin_recording(&other.join("new"), reused).unwrap();
     begin_recording(&other, None).unwrap();
     // The same folder, by another spelling of its path.
     let same = reusing
         .dir()
         .join("..")
         .join(reusing.dir().file_name().unwrap());
-    let error = begin_recording(&same, Some(&reusing)).unwrap_err();
+    let error = begin_recording(&same, reused).unwrap_err();
     assert_eq!(error.kind, Kind::Invalid, "{error}");
     assert!(reusing.dir().join(RECORD).exists(), "its record is kept");
+}
+
+/// Frames are written only into a folder whose recording has begun, and
+/// never into the folder the run reuses.
+#[test]
+fn a_recording_is_checked_to_have_begun() {
+    let reusing = opened("check");
+    let reused = Some(reusing.dir());
+    let other = scratch("reuse-check-other");
+    check_recording(&other, reused).unwrap();
+    check_recording(&other.join("not-made-yet"), None).unwrap();
+    write_sample(&other, &record()).unwrap();
+    let error = check_recording(&other, None).unwrap_err();
+    assert_eq!(error.kind, Kind::Invalid, "{error}");
+    begin_recording(&other, reused).unwrap();
+    check_recording(&other, reused).unwrap();
+    let error = check_recording(reusing.dir(), reused).unwrap_err();
+    assert_eq!(error.kind, Kind::Invalid, "{error}");
 }
 
 /// The wording of every reuse error, pinned.
@@ -337,6 +385,17 @@ fn every_reuse_error_message() {
             .to_string()
     };
     let reusing = opened("errors-same");
+    let (again, pinned) = written("errors-pin", |_| {});
+    write_sample(
+        &again,
+        &SampleRecord {
+            entry: Hex128(0xee),
+            ..record()
+        },
+    )
+    .unwrap();
+    let not_begun = scratch("reuse-errors-not-begun");
+    write_sample(&not_begun, &record()).unwrap();
     let errors = [
         (
             "other platform",
@@ -361,6 +420,7 @@ fn every_reuse_error_message() {
             frame_error("errors-lists", 1, |r| {
                 r.frames[1].ours = Hex128(1);
                 r.frames[1].shown = None;
+                r.frames[1].shown_mask = None;
             }),
         ),
         (
@@ -372,9 +432,17 @@ fn every_reuse_error_message() {
         ),
         (
             "same folder",
-            begin_recording(reusing.dir(), Some(&reusing))
+            begin_recording(reusing.dir(), Some(reusing.dir()))
                 .unwrap_err()
                 .to_string(),
+        ),
+        (
+            "recorded again",
+            Reusing::open(&pinned).unwrap_err().to_string(),
+        ),
+        (
+            "not begun",
+            check_recording(&not_begun, None).unwrap_err().to_string(),
         ),
     ];
     let platform = Platform::current();
@@ -384,6 +452,9 @@ fn every_reuse_error_message() {
         .collect::<Vec<_>>()
         .join("\n")
         .replace(&scratch_of("").display().to_string(), "<scratch>/")
-        .replace(&platform.to_string(), "<this platform>");
+        .replace(&platform.to_string(), "<this platform>")
+        // A record's hash covers its platform, which differs by machine.
+        .replace(&read_pinned(&again).unwrap().1.to_string(), "<hash now>")
+        .replace(&pinned.record.to_string(), "<hash judged>");
     insta::assert_snapshot!(text);
 }

@@ -33,8 +33,10 @@ mod sample;
 mod types;
 
 pub use pixels::{mask_hash, pixels_hash, read_frame, read_masks, read_ours, write_frame};
-pub use reuse::{Identities, Reuse, ReuseSchema, Reusing, SampleReuse, begin_recording};
-pub use sample::{RECORD, begin_sample, read_sample, write_sample};
+pub use reuse::{
+    Identities, Reuse, ReuseSchema, Reusing, SampleReuse, begin_recording, check_recording,
+};
+pub use sample::{RECORD, begin_sample, read_pinned, read_sample, write_sample};
 pub use types::{Build, Drawn, FrameRecord, Hex128, Platform, SampleRecord, Schema, Times};
 
 #[cfg(test)]
