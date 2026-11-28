@@ -115,16 +115,74 @@ pub fn combine_on_cpu(kept: &mut [f32], mask: &MaskCoverage<'_>, width: u16, hei
     apply(kept, own, &mask.step, width, height);
 }
 
-/// `kept`, the coverage so far, combined with one mask's own coverage
-/// `own` by its step.
-fn apply(kept: &mut [f32], mut own: Vec<f32>, step: &MaskStep, width: u16, height: u16) {
+/// How many px past the frame a mask's outline can still change the frame
+/// through its step: its growth, then the reach of the three box passes
+/// its feather is blurred by. An outline drawn that much wider each way is
+/// grown and feathered as it is, not as if cut at the frame.
+pub fn reach(step: &MaskStep) -> u16 {
+    let feather = |sigma: f32| match sigma > 0.0 {
+        true => 3.0 * (crate::blur::gaussian_radius(sigma).floor() + 1.0),
+        false => 0.0,
+    };
+    let reach = step.grow.abs() + feather(step.sigma[0]).max(feather(step.sigma[1]));
+    reach.ceil().clamp(0.0, f32::from(u16::MAX)) as u16
+}
+
+/// `kept`, the masks' coverage so far, combined on the CPU with one more
+/// mask the rasteriser drew on a canvas `pad` px wider than the frame on
+/// every side: grown and feathered there, then cut to the frame.
+pub fn combine_padded_on_cpu(
+    kept: &mut [f32],
+    mask: &MaskCoverage<'_>,
+    width: u16,
+    height: u16,
+    pad: u16,
+) {
+    if pad == 0 {
+        return combine_on_cpu(kept, mask, width, height);
+    }
+    let (pw, ph) = (width + 2 * pad, height + 2 * pad);
+    let own: Vec<f32> = mask
+        .drawn
+        .chunks_exact(4)
+        .map(|p| f32::from(p[3]) / 255.0)
+        .collect();
+    let own = shaped(own, &mask.step, pw, ph);
+    let (w, h, p, pwu) = (
+        usize::from(width),
+        usize::from(height),
+        usize::from(pad),
+        usize::from(pw),
+    );
+    let mut cropped = Vec::with_capacity(w * h);
+    for y in 0..h {
+        let start = (y + p) * pwu + p;
+        cropped.extend_from_slice(&own[start..start + w]);
+    }
+    mix(kept, &cropped, &mask.step);
+}
+
+/// One mask's own coverage grown and feathered by its step.
+fn shaped(mut own: Vec<f32>, step: &MaskStep, width: u16, height: u16) -> Vec<f32> {
     if step.grow != 0.0 {
         spread(&mut own, width, height, step.grow);
     }
     if step.sigma.iter().any(|s| *s > 0.0) {
         own = feathered(own, width, height, step.sigma);
     }
-    par::each_with(kept, &own, |_, a, &m| {
+    own
+}
+
+/// `kept`, the coverage so far, combined with one mask's own coverage
+/// `own` by its step.
+fn apply(kept: &mut [f32], own: Vec<f32>, step: &MaskStep, width: u16, height: u16) {
+    let own = shaped(own, step, width, height);
+    mix(kept, &own, step);
+}
+
+/// `kept` combined with a mask's grown and feathered coverage `own`.
+fn mix(kept: &mut [f32], own: &[f32], step: &MaskStep) {
+    par::each_with(kept, own, |_, a, &m| {
         let m = match step.inverted {
             true => 1.0 - m,
             false => m,

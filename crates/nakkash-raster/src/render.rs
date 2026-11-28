@@ -616,20 +616,59 @@ impl<'a> Painter<'a> {
         let Some((start, steps)) = crate::mask::steps(masks, transform) else {
             return Ok(None);
         };
-        let draw = |mask: &LayerMask| {
-            let mut painter = self.alone();
-            painter.ctx.set_transform(transform);
+        let (width, height) = (self.width, self.height);
+        // How far past the frame each outline is drawn, so that growing and
+        // feathering it read the outline that lies there rather than a
+        // frame-sized cut of it: none when the outline stays farther inside
+        // the frame than the step reaches (1 px more for its antialiased
+        // rim), at most what keeps the canvas in 16 bits.
+        let room = (u16::MAX - width.max(height)) / 2;
+        let pads: Vec<u16> = steps
+            .iter()
+            .map(|(mask, step)| {
+                let reach = crate::mask::reach(step);
+                let margin = f64::from(reach) + 1.0;
+                let bounds = transform.transform_rect_bbox(mask.path.bounding_box());
+                let inside = bounds.x0 >= margin
+                    && bounds.y0 >= margin
+                    && bounds.x1 <= f64::from(width) - margin
+                    && bounds.y1 <= f64::from(height) - margin;
+                match inside {
+                    true => 0,
+                    false => reach.min(room),
+                }
+            })
+            .collect();
+        // The outline drawn on a canvas `pad` px wider than the frame on
+        // every side.
+        let draw = |mask: &LayerMask, pad: u16| {
+            let mut painter = Painter::new(
+                width + 2 * pad,
+                height + 2 * pad,
+                self.options,
+                self.level,
+                Arc::clone(&self.reads),
+                self.accel,
+            );
+            painter
+                .ctx
+                .set_transform(Affine::translate((f64::from(pad), f64::from(pad))) * transform);
             painter.ctx.set_paint(Color::WHITE.to_vello());
             painter.ctx.set_fill_rule(vello_cpu::peniko::Fill::NonZero);
             painter.ctx.fill_path(&mask.path);
             painter.rendered()
         };
-        let (width, height) = (self.width, self.height);
-        match self.accel.filter(|a| held && a.holds(width, height)) {
+        // The accelerator holds frame-sized masks; one drawn wider is
+        // worked out on the CPU, which is the accelerator's reference.
+        let framed = pads.iter().all(|&pad| pad == 0);
+        match self
+            .accel
+            .filter(|a| held && framed && a.holds(width, height))
+        {
             Some(accel) => {
                 let mut kept = None;
                 for (mask, step) in steps {
-                    let drawn = draw(mask);
+                    let drawn = draw(mask, 0);
                     let mask = crate::mask::MaskCoverage {
                         drawn: bytes_of(&drawn),
                         step,
@@ -640,13 +679,13 @@ impl<'a> Painter<'a> {
             }
             None => {
                 let mut kept = vec![start; usize::from(width) * usize::from(height)];
-                for (mask, step) in steps {
-                    let drawn = draw(mask);
+                for ((mask, step), pad) in steps.into_iter().zip(pads) {
+                    let drawn = draw(mask, pad);
                     let mask = crate::mask::MaskCoverage {
                         drawn: bytes_of(&drawn),
                         step,
                     };
-                    crate::mask::combine_on_cpu(&mut kept, &mask, width, height);
+                    crate::mask::combine_padded_on_cpu(&mut kept, &mask, width, height, pad);
                 }
                 Ok(Some(Kept::Values(kept)))
             }
