@@ -35,7 +35,9 @@
 //!
 //! [D90]: https://github.com/lefinehq/nakkash/blob/main/docs/design/decisions.md#d90-a-frame-is-drawn-from-a-plan-that-knows-what-each-drawing-is-under-one-memory-budget
 
+mod chain;
 mod class;
+mod spin;
 pub mod store;
 
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -305,6 +307,11 @@ unsafe fn unmap(ptr: *mut u8, size: usize) {
     let _ = unsafe { libc::munmap(ptr.cast(), size) };
 }
 
+/// Nothing, where nothing is ever mapped.
+///
+/// # Safety
+/// As the unix version: `ptr` and `size` are a mapping [`map`] made, not
+/// used again.
 #[cfg(not(unix))]
 unsafe fn unmap(_: *mut u8, _: usize) {}
 

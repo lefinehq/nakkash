@@ -4,8 +4,9 @@
 //!
 //! The store, its counters and what is resident are the process's, so the
 //! tests take turns. A test that needs a process of its own (no keep
-//! function, the clobber variable, the allocator entered from inside
-//! itself) runs one of the `child_` tests in a child process.
+//! function, an environment of its own, the allocator entered from inside
+//! itself, a ledger counted from the start) runs one of the `child_` tests
+//! in a child process.
 //!
 //! Tests that look at the bytes of a block from `alloc` call [`GivesBack`]'s
 //! methods directly, as plain functions, and read through the pointer they
@@ -27,8 +28,8 @@ static ALLOCATOR: GivesBack = GivesBack;
 /// The bytes the store may keep, as the keep function reads them.
 static ROOM: AtomicU64 = AtomicU64::new(0);
 
-/// What the keep function does: read [`ROOM`], or allocate, which a keep
-/// function must never do.
+/// What the keep function does: read [`ROOM`], or allocate or trim the
+/// store, which a keep function must never do.
 static MODE: AtomicU64 = AtomicU64::new(READS);
 
 /// The keep function reads [`ROOM`].
@@ -37,11 +38,15 @@ const READS: u64 = 0;
 /// The keep function allocates, as one must not.
 const ALLOCATES: u64 = 1;
 
+/// The keep function trims the store, as one must not.
+const TRIMS: u64 = 2;
+
 /// The keep function every test of this process registers: it reads
 /// atomics only, unless a child test asks it to allocate.
 fn room() -> u64 {
     match MODE.load(Relaxed) {
         ALLOCATES => std::hint::black_box(vec![1u8; 64]).len() as u64,
+        TRIMS => blocks::trim(0),
         _ => ROOM.load(Relaxed),
     }
 }
@@ -298,57 +303,29 @@ fn without_poison_a_kept_block_comes_back_as_it_was_left() {
 }
 
 #[test]
-fn the_clobber_variable_sets_the_poison() {
+fn the_store_reads_no_variable_of_the_environment() {
+    // Poison is the program's to set, outside the allocator: a clobber
+    // variable in the environment turns nothing on.
     passes(
-        "child_poison_from_the_variable",
+        "child_poison_is_off_until_set",
         &[("NAKKASH_CLOBBER", "7f")],
     );
-    passes(
-        "child_poison_from_the_variable",
-        &[("NAKKASH_CLOBBER", "1")],
-    );
-    passes(
-        "child_poison_from_the_variable",
-        &[("NAKKASH_CLOBBER", "FF")],
-    );
-    passes("child_poison_from_the_variable", &[]);
-    passes(
-        "child_poison_set_overrides_the_variable",
-        &[("NAKKASH_CLOBBER", "7f")],
-    );
+    passes("child_poison_is_off_until_set", &[("NAKKASH_CLOBBER", "1")]);
 }
 
 #[test]
-#[ignore = "run in a child process by the_clobber_variable_sets_the_poison"]
-fn child_poison_from_the_variable() {
-    if !as_child("child_poison_from_the_variable") {
+#[ignore = "run in a child process by the_store_reads_no_variable_of_the_environment"]
+fn child_poison_is_off_until_set() {
+    if !as_child("child_poison_is_off_until_set") {
         return;
     }
-    let expected = match std::env::var("NAKKASH_CLOBBER").as_deref() {
-        Ok("7f") => 0x7F,
-        Ok("1" | "FF") => 0xFF,
-        Ok(other) => panic!("no case for {other}"),
-        Err(_) => 0,
-    };
-    let layout = bytes(2 * BIG);
-    let block = alloc(layout);
-    assert!(
-        read(block, layout.size()).iter().all(|&b| b == expected),
-        "every byte {expected:#04x}"
-    );
-    dealloc(block, layout);
-}
-
-#[test]
-#[ignore = "run in a child process by the_clobber_variable_sets_the_poison"]
-fn child_poison_set_overrides_the_variable() {
-    if !as_child("child_poison_set_overrides_the_variable") {
-        return;
-    }
-    blocks::set_poison(None);
     let layout = bytes(2 * BIG);
     let block = alloc(layout);
     assert!(read(block, layout.size()).iter().all(|&b| b == 0));
+    dealloc(block, layout);
+    blocks::set_poison(Some(0x7F));
+    let block = alloc(layout);
+    assert!(read(block, layout.size()).iter().all(|&b| b == 0x7F));
     dealloc(block, layout);
 }
 
@@ -421,68 +398,11 @@ fn child_kept_never_passes_the_cap() {
     if !as_child("child_kept_never_passes_the_cap") {
         return;
     }
-    const CAP: u64 = 16 * MIB;
-    const SIZES: [usize; 7] = [
-        BIG,
-        BIG + 1,
-        BIG + BIG / 2,
-        2 * BIG,
-        3 * BIG + 5,
-        5 * BIG,
-        8 * BIG,
-    ];
     let _turn = turn(CAP);
     let before = blocks::stats();
     std::thread::scope(|scope| {
         for thread in 0..8u64 {
-            scope.spawn(move || {
-                // A small generator of its own per thread: the same
-                // operations every run.
-                let mut seed = 0x9E37_79B9_7F4A_7C15 ^ (thread + 1);
-                let mut next = move || {
-                    seed ^= seed << 13;
-                    seed ^= seed >> 7;
-                    seed ^= seed << 17;
-                    seed
-                };
-                let mut live: Vec<(*mut u8, Layout, u64)> = Vec::with_capacity(4);
-                for op in 0..1500u64 {
-                    let tag = (thread << 32) | op;
-                    let choice = next() % 4;
-                    match (choice, live.len()) {
-                        (0 | 1, 0..4) | (_, 0) => {
-                            let layout = bytes(SIZES[next() as usize % SIZES.len()]);
-                            let block = alloc(layout);
-                            stamp(block, layout, tag);
-                            live.push((block, layout, tag));
-                        }
-                        (2, _) => {
-                            let at = next() as usize % live.len();
-                            let (block, layout, tag) = live.swap_remove(at);
-                            check(block, layout, tag);
-                            dealloc(block, layout);
-                        }
-                        _ => {
-                            let at = next() as usize % live.len();
-                            let (block, layout, old) = live[at];
-                            check(block, layout, old);
-                            let size = SIZES[next() as usize % SIZES.len()];
-                            let moved = realloc(block, layout, size);
-                            // The prefix is kept: the first stamp survives.
-                            assert_eq!(read(moved, 8), &old.to_le_bytes());
-                            let layout = bytes(size);
-                            stamp(moved, layout, tag);
-                            live[at] = (moved, layout, tag);
-                        }
-                    }
-                    let kept = blocks::kept();
-                    assert!(kept <= CAP, "{kept} bytes kept, cap {CAP}");
-                }
-                for (block, layout, tag) in live {
-                    check(block, layout, tag);
-                    dealloc(block, layout);
-                }
-            });
+            scope.spawn(move || hammer(thread, CAP));
         }
     });
     let delta = since(before);
@@ -490,6 +410,134 @@ fn child_kept_never_passes_the_cap() {
     assert!(delta.reused > 0, "the store served blocks: {delta:?}");
     assert!(delta.unmapped > 0, "the cap turned blocks away: {delta:?}");
     assert!(blocks::kept() <= CAP);
+    settled(before);
+}
+
+#[test]
+fn trim_tick_and_settle_race_eight_threads_keeping_and_reusing() {
+    // A process of its own, so the ledger and the most ever kept are this
+    // run's.
+    passes("child_trim_tick_and_settle_race_the_hammer", &[]);
+}
+
+#[test]
+#[ignore = "run in a child process by trim_tick_and_settle_race_eight_threads_keeping_and_reusing"]
+fn child_trim_tick_and_settle_race_the_hammer() {
+    if !as_child("child_trim_tick_and_settle_race_the_hammer") {
+        return;
+    }
+    let _turn = turn(CAP);
+    // A block goes stale after one idle tick, so ticks let blocks go while
+    // other threads keep and take them.
+    blocks::set_stale_ticks(1);
+    let before = blocks::stats();
+    let working = AtomicU64::new(8);
+    std::thread::scope(|scope| {
+        for thread in 0..8u64 {
+            let working = &working;
+            scope.spawn(move || {
+                hammer(thread, CAP);
+                working.fetch_sub(1, Relaxed);
+            });
+        }
+        scope.spawn(|| {
+            let mut round = 0u64;
+            while working.load(Relaxed) > 0 {
+                // What one trim lets go has no bound here: the workers keep
+                // blocks while it runs. What the store holds does.
+                blocks::trim(CAP / 2);
+                assert!(blocks::kept() <= CAP, "after trim");
+                blocks::tick();
+                assert!(blocks::kept() <= CAP, "after tick");
+                if round.is_multiple_of(16) {
+                    blocks::settle();
+                    assert!(blocks::kept() <= CAP, "after settle");
+                }
+                round += 1;
+            }
+        });
+    });
+    let delta = since(before);
+    assert!(delta.kept_peak <= CAP, "{delta:?}");
+    settled(before);
+}
+
+/// The keep cap of the hammer tests.
+const CAP: u64 = 16 * MIB;
+
+/// Block sizes of several classes, as the hammer tests ask for them.
+const SIZES: [usize; 7] = [
+    BIG,
+    BIG + 1,
+    BIG + BIG / 2,
+    2 * BIG,
+    3 * BIG + 5,
+    5 * BIG,
+    8 * BIG,
+];
+
+/// Asserts the ledger balances once the store is settled with no block
+/// held: nothing kept, and every block mapped since `before` (moved ones
+/// counted on both sides) given back, so no byte was lost or counted
+/// twice.
+fn settled(before: BlockStats) {
+    blocks::settle();
+    let delta = since(before);
+    assert_eq!(blocks::kept(), 0, "{delta:?}");
+    assert_eq!(delta.unmapped, delta.mapped, "{delta:?}");
+}
+
+/// One thread's share of a hammer test: 1,500 random allocations, frees and
+/// reallocations of blocks of [`SIZES`], each block stamped at both ends
+/// and checked before it is freed or moved, with `kept` checked against
+/// `cap` after every operation. Everything it holds is freed at the end.
+fn hammer(thread: u64, cap: u64) {
+    // A small generator of its own per thread: the same operations every
+    // run.
+    let mut seed = 0x9E37_79B9_7F4A_7C15 ^ (thread + 1);
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut live: Vec<(*mut u8, Layout, u64)> = Vec::with_capacity(4);
+    for op in 0..1500u64 {
+        let tag = (thread << 32) | op;
+        let choice = next() % 4;
+        match (choice, live.len()) {
+            (0 | 1, 0..4) | (_, 0) => {
+                let layout = bytes(SIZES[next() as usize % SIZES.len()]);
+                let block = alloc(layout);
+                stamp(block, layout, tag);
+                live.push((block, layout, tag));
+            }
+            (2, _) => {
+                let at = next() as usize % live.len();
+                let (block, layout, tag) = live.swap_remove(at);
+                check(block, layout, tag);
+                dealloc(block, layout);
+            }
+            _ => {
+                let at = next() as usize % live.len();
+                let (block, layout, old) = live[at];
+                check(block, layout, old);
+                let size = SIZES[next() as usize % SIZES.len()];
+                let moved = realloc(block, layout, size);
+                // The prefix is kept: the first stamp survives.
+                assert_eq!(read(moved, 8), &old.to_le_bytes());
+                let layout = bytes(size);
+                stamp(moved, layout, tag);
+                live[at] = (moved, layout, tag);
+            }
+        }
+        let kept = blocks::kept();
+        assert!(kept <= cap, "{kept} bytes kept, cap {cap}");
+    }
+    for (block, layout, tag) in live {
+        check(block, layout, tag);
+        dealloc(block, layout);
+    }
 }
 
 /// Writes `tag` at both ends of `block`.
@@ -642,6 +690,32 @@ fn realloc_across_classes_keeps_the_prefix_and_takes_from_the_store() {
     dealloc(tiny, bytes(1000));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn realloc_across_classes_is_moved_by_the_system_when_the_store_has_none() {
+    let _turn = turn(64 * MIB);
+    let first = bytes(BIG + 7);
+    let block = alloc(first);
+    pattern(block, first.size());
+    let before = blocks::stats();
+    let grown = realloc(block, first, 5 * BIG);
+    let delta = since(before);
+    // One block of the old class unmapped, one of the new mapped, in one
+    // move; nothing kept or taken.
+    assert_eq!(
+        (delta.mapped, delta.unmapped, delta.reused, delta.kept),
+        (1, 1, 0, 0),
+        "{delta:?}"
+    );
+    assert!(
+        read(grown, first.size())
+            .iter()
+            .enumerate()
+            .all(|(i, &b)| b == (i % 251) as u8)
+    );
+    dealloc(grown, bytes(5 * BIG));
+}
+
 #[test]
 fn realloc_across_classes_poisons_past_the_prefix() {
     let _turn = turn(64 * MIB);
@@ -747,6 +821,37 @@ fn child_keep_function_allocates() {
     let layout = bytes(2 * BIG);
     let block = alloc(layout);
     // The free asks the keep function for the room, which allocates.
+    dealloc(block, layout);
+    println!("reached");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_keep_function_that_trims_the_store_stops_the_process() {
+    let out = child("child_keep_function_trims", &[]);
+    assert!(!out.status.success(), "the child stopped");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("the allocator was entered from inside itself"),
+        "{said}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("reached"),
+        "stopped at the free"
+    );
+}
+
+#[test]
+#[ignore = "run in a child process by a_keep_function_that_trims_the_store_stops_the_process"]
+fn child_keep_function_trims() {
+    if !as_child("child_keep_function_trims") {
+        return;
+    }
+    blocks::set_keep(room_fn());
+    MODE.store(TRIMS, Relaxed);
+    let layout = bytes(2 * BIG);
+    let block = alloc(layout);
+    // The free asks the keep function for the room, which trims.
     dealloc(block, layout);
     println!("reached");
 }

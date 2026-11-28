@@ -31,9 +31,8 @@
 //!
 //! By the allocator's contract, a block from `alloc` holds anything and a
 //! block from `alloc_zeroed` holds zeros, so a kept block is zeroed only
-//! when zeros are asked for. Poison ([`set_poison`], or the
-//! `NAKKASH_CLOBBER` variable) fills blocks with a byte, so code that reads
-//! what it never wrote shows:
+//! when zeros are asked for. Poison ([`set_poison`]) fills blocks with a
+//! byte, so code that reads what it never wrote shows:
 //!
 //! | Request | Fresh mapping | Block from the store | Poison set |
 //! |---|---|---|---|
@@ -45,14 +44,14 @@
 //!
 //! [D90]: https://github.com/lefinehq/nakkash/blob/main/docs/design/decisions.md#d90-a-frame-is-drawn-from-a-plan-that-knows-what-each-drawing-is-under-one-memory-budget
 
-use std::cell::UnsafeCell;
-use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::OnceLock;
-use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
+use std::sync::atomic::{AtomicU16, AtomicU64};
 
+use super::chain::{Chain, Node};
 use super::class::{CLASSES, class_bytes};
+use super::spin::Spin;
 #[cfg(doc)]
 use super::{BIG, GivesBack};
 
@@ -89,9 +88,11 @@ pub struct BlockStats {
 /// The first function registered stays; later calls change nothing.
 ///
 /// The allocator calls it on every free of a big block, from inside
-/// itself, so it must read atomics only: it must never allocate, lock or
-/// call into the system. In debug builds, an allocation from it stops the
-/// process with a message.
+/// itself, so it must read atomics only: it must never allocate, lock,
+/// call into the system or panic (a panic may not unwind out of an
+/// allocator, and would allocate). In debug builds, an allocation from it,
+/// or a call to [`trim`], [`tick`] or [`settle`], stops the process with a
+/// message.
 pub fn set_keep(room: fn() -> u64) {
     // Taken only if none was set: the first one stays.
     let _ = KEEP.set(room);
@@ -152,9 +153,9 @@ pub fn set_stale_ticks(ticks: u64) {
 }
 
 /// Sets the byte that fills every block `alloc` hands out and every block
-/// the store keeps, or none. Until it is first set, the poison is what the
-/// `NAKKASH_CLOBBER` variable names: `1` for `0xFF`, or a byte in hex such
-/// as `7f`; any other value it holds still turns poison on, as `0xFF`.
+/// the store keeps, or none; none until set. The store reads no variable of
+/// the environment: the program that wants poison sets it here, outside the
+/// allocator.
 pub fn set_poison(byte: Option<u8>) {
     POISON.store(byte.map_or(NO_POISON, u16::from), Relaxed);
 }
@@ -284,67 +285,16 @@ unsafe fn unmap(node: NonNull<Node>, class: usize) -> u64 {
     bytes as u64
 }
 
-/// The poison byte, or `None`; read from `NAKKASH_CLOBBER` the first time
-/// when [`set_poison`] has not set it.
+/// The poison byte, or `None`.
 pub(super) fn poison() -> Option<u8> {
-    let read = match POISON.load(Relaxed) {
-        UNREAD => {
-            let named = poison_from_env().map_or(NO_POISON, u16::from);
-            // Set unless `set_poison` was called meanwhile, which wins.
-            let _ = POISON.compare_exchange(UNREAD, named, Relaxed, Relaxed);
-            POISON.load(Relaxed)
-        }
-        read => read,
-    };
-    u8::try_from(read).ok()
-}
-
-/// The byte the `NAKKASH_CLOBBER` variable names, when it is set.
-///
-/// The allocator reads it the first time it hands out a big block, so it
-/// reads it through the C library, which allocates nothing.
-#[cfg(unix)]
-fn poison_from_env() -> Option<u8> {
-    // SAFETY: a name ending in a zero byte. The C library reads the
-    // environment, which nothing writes meanwhile: the standard library's
-    // `set_var` requires, as its safety condition, that no other thread
-    // reads the environment while it writes it.
-    let value = unsafe { libc::getenv(CLOBBER_VAR.as_ptr()) };
-    let value = NonNull::new(value)?;
-    // SAFETY: the C library's value, a string ending in a zero byte that
-    // stays while the environment is not written.
-    let value = unsafe { std::ffi::CStr::from_ptr(value.as_ptr()) };
-    Some(poison_named(value.to_bytes()))
-}
-
-#[cfg(not(unix))]
-fn poison_from_env() -> Option<u8> {
-    None
-}
-
-/// The variable that turns poison on: the one the raster's grid clobbering
-/// reads.
-#[cfg(unix)]
-const CLOBBER_VAR: &std::ffi::CStr = c"NAKKASH_CLOBBER";
-
-/// The byte a value of `NAKKASH_CLOBBER` names: `1` for `0xFF`, else a
-/// byte in hex, such as `7f` or `FF`. Any other value names `0xFF`: a set
-/// variable has always turned clobbering on, whatever it held.
-fn poison_named(value: &[u8]) -> u8 {
-    match std::str::from_utf8(value).map(str::trim) {
-        Ok("1") | Err(_) => 0xFF,
-        Ok(hex) => u8::from_str_radix(hex, 16).unwrap_or(0xFF),
-    }
+    u8::try_from(POISON.load(Relaxed)).ok()
 }
 
 /// [`POISON`] when no poison is set.
 const NO_POISON: u16 = 0x100;
 
-/// [`POISON`] before it is set or the variable is read.
-const UNREAD: u16 = 0x200;
-
-/// The poison: a byte (0–255), [`NO_POISON`] or [`UNREAD`].
-static POISON: AtomicU16 = AtomicU16::new(UNREAD);
+/// The poison: a byte (0–255) or [`NO_POISON`].
+static POISON: AtomicU16 = AtomicU16::new(NO_POISON);
 
 /// The keep function; none until [`set_keep`].
 static KEEP: OnceLock<fn() -> u64> = OnceLock::new();
@@ -376,180 +326,6 @@ struct Stats {
     stale: AtomicU64,
     kept: AtomicU64,
     kept_peak: AtomicU64,
-}
-
-/// The head of a kept block: the link to the block below it on its class's
-/// stack, and the tick it was freed at.
-#[repr(C)]
-struct Node {
-    /// The block below, or null at the bottom.
-    next: *mut Node,
-    /// The [`EPOCH`] when it was freed.
-    freed: u64,
-}
-
-impl Node {
-    /// Writes a node freed at tick `freed`, linked to nothing, at the start
-    /// of `block`.
-    ///
-    /// # Safety
-    /// `block` is valid for writes of a node, aligned to 8 bytes, and
-    /// nothing else reads or writes its first bytes while the node is
-    /// there.
-    unsafe fn at(block: *mut u8, freed: u64) -> NonNull<Node> {
-        let node = block.cast::<Node>();
-        let head = Node {
-            next: std::ptr::null_mut(),
-            freed,
-        };
-        // SAFETY: the caller's block, valid and aligned for a node.
-        unsafe { node.write(head) };
-        // SAFETY: valid for writes, so not null.
-        unsafe { NonNull::new_unchecked(node) }
-    }
-}
-
-/// A stack of nodes linked through their `next`, top first.
-struct Chain {
-    /// The top node, or null when empty.
-    head: *mut Node,
-}
-
-// SAFETY: a chain owns the blocks it links: no other thread reads or
-// writes them while the chain holds them, so it may move between threads.
-unsafe impl Send for Chain {}
-
-impl Chain {
-    /// An empty chain.
-    const fn new() -> Self {
-        Chain {
-            head: std::ptr::null_mut(),
-        }
-    }
-
-    /// Whether the chain holds no node.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        allow(dead_code, reason = "read by `has` on Linux, and by the tests")
-    )]
-    fn is_empty(&self) -> bool {
-        self.head.is_null()
-    }
-
-    /// Puts `node` on top.
-    ///
-    /// # Safety
-    /// `node` is valid and in no chain, and stays valid, read and written
-    /// only by this chain, until it is popped.
-    unsafe fn push(&mut self, node: NonNull<Node>) {
-        // SAFETY: the caller's node, which this chain alone writes.
-        unsafe { (*node.as_ptr()).next = self.head };
-        self.head = node.as_ptr();
-    }
-
-    /// Takes the top node off, if any.
-    fn pop(&mut self) -> Option<NonNull<Node>> {
-        let node = NonNull::new(self.head)?;
-        // SAFETY: a node `push` was given, valid while the chain holds it.
-        self.head = unsafe { node.as_ref() }.next;
-        Some(node)
-    }
-
-    /// Takes every node `gone` picks off into a chain of its own, and keeps
-    /// the others in their order.
-    fn split_off(&mut self, gone: impl Fn(&Node) -> bool) -> Chain {
-        let mut picked = Chain::new();
-        let mut rest = Chain::new();
-        while let Some(node) = self.pop() {
-            // SAFETY: just popped, so valid and held by no chain.
-            let to = match gone(unsafe { node.as_ref() }) {
-                true => &mut picked,
-                false => &mut rest,
-            };
-            // SAFETY: popped from this chain, now in no chain.
-            unsafe { to.push(node) };
-        }
-        // `rest` is upside down; turned back, the newest is on top again.
-        while let Some(node) = rest.pop() {
-            // SAFETY: popped from `rest`, now in no chain.
-            unsafe { self.push(node) };
-        }
-        picked
-    }
-}
-
-/// A spin lock: what guards each class's stack, since the allocator may
-/// not take a lock that could allocate or sleep in the system, and each is
-/// held for a few instructions.
-struct Spin<T> {
-    /// Whether a thread holds it.
-    locked: AtomicBool,
-    /// What it guards.
-    value: UnsafeCell<T>,
-}
-
-// SAFETY: the value is reached only through a guard, and `lock` hands out
-// one guard at a time, so threads share it as they would through a mutex.
-unsafe impl<T: Send> Sync for Spin<T> {}
-
-impl<T> Spin<T> {
-    /// A lock, not held, guarding `value`.
-    const fn new(value: T) -> Self {
-        Spin {
-            locked: AtomicBool::new(false),
-            value: UnsafeCell::new(value),
-        }
-    }
-
-    /// Waits until no other thread holds the lock, then holds it until the
-    /// guard is dropped.
-    fn lock(&self) -> Held<'_, T> {
-        let mut spins = 0u32;
-        while self
-            .locked
-            .compare_exchange_weak(false, true, Acquire, Relaxed)
-            .is_err()
-        {
-            spins += 1;
-            match spins % SPINS_BEFORE_YIELD {
-                // A holder the system stopped: give it the processor.
-                0 => std::thread::yield_now(),
-                _ => std::hint::spin_loop(),
-            }
-        }
-        Held { lock: self }
-    }
-}
-
-/// How many times a waiting thread spins before it yields the processor.
-const SPINS_BEFORE_YIELD: u32 = 64;
-
-/// A held [`Spin`]: the guarded value, and the lock let go when dropped.
-struct Held<'a, T> {
-    /// The lock held.
-    lock: &'a Spin<T>,
-}
-
-impl<T> Deref for Held<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        // SAFETY: the lock is held, so no other reference to the value is.
-        unsafe { &*self.lock.value.get() }
-    }
-}
-
-impl<T> DerefMut for Held<'_, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: the lock is held, so no other reference to the value is.
-        unsafe { &mut *self.lock.value.get() }
-    }
-}
-
-impl<T> Drop for Held<'_, T> {
-    fn drop(&mut self) {
-        self.lock.locked.store(false, Release);
-    }
 }
 
 #[cfg(test)]
