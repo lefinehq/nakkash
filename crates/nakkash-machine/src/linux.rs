@@ -32,15 +32,20 @@ fn cgroup_limit() -> Option<u64> {
     parse::limit(&v1).filter(|&bytes| bytes < 1 << 60)
 }
 
-/// The version of the GNU C library the process runs with, which holds the
-/// maths functions, and the kernel's release: `glibc 2.39, Linux
-/// 6.8.0-49-generic`. `None` with another C library.
+/// The version of the GNU C library the process runs with, the content
+/// hash of the maths library it loaded ([`crate::loader`]), and the
+/// kernel's release: `glibc 2.39, libm <32 hex digits>, Linux
+/// 6.8.0-49-generic`. The version alone does not change with a
+/// distribution's patch update of the library, which may change its maths;
+/// the hash does. `None` with another C library, or when the maths library
+/// cannot be named.
 pub(crate) fn system() -> Option<String> {
     #[cfg(target_env = "gnu")]
     {
         let glibc = crate::unix::glibc_version()?;
+        let libm = format!("{:032x}", crate::loader::maths_library()?.hash);
         let kernel = crate::unix::kernel_release()?;
-        parse::system_name([("glibc", &glibc), ("Linux", &kernel)])
+        parse::system_name([("glibc", &glibc), ("libm", &libm), ("Linux", &kernel)])
     }
     #[cfg(not(target_env = "gnu"))]
     None

@@ -9,7 +9,7 @@ use rstest::rstest;
 
 use super::*;
 use crate::diff::{Error, FrameDiff};
-use crate::record::tests::{room, scratch, scratch_path};
+use crate::record::tests::{as_json, room, scratch, scratch_path};
 use crate::record::{Build, Schema, Times, read_pinned, write_sample};
 
 /// An identified build, as a binary built in its checkout names itself.
@@ -137,7 +137,10 @@ fn a_record_recorded_again_after_the_list_was_made_is_refused() {
     assert_eq!(place, dir.join(RECORD).display().to_string());
     // A list made from the record as it is now opens it.
     let fresh = SampleReuse::every_frame(dir).unwrap();
-    assert_eq!(Reusing::open(&fresh).unwrap().record(), &again);
+    assert_eq!(
+        as_json(Reusing::open(&fresh).unwrap().record()),
+        as_json(&again)
+    );
 }
 
 #[test]
@@ -147,7 +150,7 @@ fn a_reuse_list_reads_its_folders_from_its_own_folder() {
     fs::write(&path, reuse_json(&Platform::current(), "records/m001")).unwrap();
     let reuse = Reuse::read(&path).unwrap();
     assert_eq!(reuse.schema, ReuseSchema::V1);
-    assert_eq!(reuse.platform, Platform::current());
+    assert_eq!(as_json(&reuse.platform), as_json(&Platform::current()));
     let sample = &reuse.samples["m001"];
     assert_eq!(sample.dir, dir.join("records/m001"));
     assert_eq!(sample.frames, BTreeMap::from([(1, identities(1))]));
@@ -236,7 +239,7 @@ fn a_missing_reuse_list_is_an_io_error() {
 #[test]
 fn a_record_opened_for_reuse_holds_what_its_folder_holds() {
     let reusing = opened("open");
-    assert_eq!(reusing.record(), &record());
+    assert_eq!(as_json(reusing.record()), as_json(&record()));
     assert_eq!(reusing.dir(), scratch_path("reuse-open"));
 }
 

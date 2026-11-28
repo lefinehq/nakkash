@@ -8,6 +8,8 @@ use rstest::rstest;
 use super::*;
 use nakkash_format::Kind;
 
+use crate::record::tests::as_json;
+
 #[rstest]
 #[case::zero(0, "00000000000000000000000000000000")]
 #[case::one(1, "00000000000000000000000000000001")]
@@ -71,7 +73,7 @@ fn the_platform_names_this_processor_its_simd_level_system_and_code_generation()
     assert_eq!(platform.system, nakkash_machine::system());
     // The tests were built by cargo, whose compiler answers `-vV`.
     assert!(platform.codegen.is_some(), "{platform:?}");
-    assert_eq!(Platform::current(), platform);
+    assert_eq!(as_json(&Platform::current()), as_json(&platform));
 }
 
 /// The code generation is read from what the build script wrote: a hash,
@@ -178,7 +180,10 @@ fn a_platform_without_every_part_is_refused(#[case] json: &str) {
     let read: Platform = serde_json::from_str(unknown).unwrap();
     assert_eq!((read.system, read.codegen), (None, None));
     let json = serde_json::to_string(&platform()).unwrap();
-    assert_eq!(serde_json::from_str::<Platform>(&json).unwrap(), platform());
+    assert_eq!(
+        as_json(&serde_json::from_str::<Platform>(&json).unwrap()),
+        as_json(&platform())
+    );
 }
 
 /// A build is identified by its commit; a tree's hash says it was dirty.

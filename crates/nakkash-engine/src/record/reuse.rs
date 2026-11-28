@@ -98,8 +98,9 @@ impl SampleReuse {
 }
 
 /// The frames a runner allows a fidelity run to reuse, by sample id
-/// (`nakkash.FidelityReuse.1`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// (`nakkash.FidelityReuse.1`). Not comparable by `==`, as its
+/// [`Platform`] is not.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Reuse {
     /// The list's form.
@@ -142,7 +143,7 @@ impl Reuse {
 
 /// A sample's record opened for reuse: read once, and only when it can
 /// vouch for its pixels, with the frames the runner allows to be reused.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Reusing {
     /// The record's folder.
     dir: PathBuf,

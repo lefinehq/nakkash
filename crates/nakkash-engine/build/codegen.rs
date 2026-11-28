@@ -28,17 +28,22 @@ pub(crate) const FLAGS: [&str; 4] = [
     "DEBUG",
 ];
 
-/// The variables whose change runs the build script again: the compiler,
-/// the toolchain chosen and the flags as given, then [`FLAGS`].
-pub(crate) const WATCHED: [&str; 8] = [
+/// The variables of cargo's own environment whose change runs the build
+/// script again: the compiler, the toolchain chosen and the flags as given,
+/// `CARGO_ENCODED_RUSTFLAGS` among them, which cargo reads from its
+/// environment before it sets it for the script.
+///
+/// The rest of [`FLAGS`] are not here: cargo sets them for the script and
+/// watches only the environment it was started with, so naming them would
+/// watch nothing. A change of target features or profile is a change of
+/// flags or profile, which builds every unit again, this script's run among
+/// them.
+pub(crate) const WATCHED: [&str; 5] = [
     "RUSTC",
     "RUSTUP_TOOLCHAIN",
     "RUSTFLAGS",
     "CARGO_BUILD_RUSTFLAGS",
-    FLAGS[0],
-    FLAGS[1],
-    FLAGS[2],
-    FLAGS[3],
+    "CARGO_ENCODED_RUSTFLAGS",
 ];
 
 /// What a build compiles with.

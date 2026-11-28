@@ -124,7 +124,7 @@ pub fn write_scene(dir: &Path, scene: &str, quota: &Quota) -> Result<Hex128> {
 
 /// A recorded sample opened to draw its frames again: its record, its
 /// replay and the text of its scene, each file checked against the record.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Replayed {
     /// The sample's record.
     pub record: SampleRecord,

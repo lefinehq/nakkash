@@ -38,7 +38,7 @@ use frames::Origin;
 pub use frames::{FrameCounts, Replayer, frame_counts};
 
 /// What to compare with, and how.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct DiffOptions {
     /// The reference frames, in order: PNG files of the scene's size.
     pub frames: Vec<PathBuf>,

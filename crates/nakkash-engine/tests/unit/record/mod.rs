@@ -47,6 +47,13 @@ pub(crate) fn scratch_path(name: &str) -> PathBuf {
     ))
 }
 
+/// What `value` writes, as JSON: how the tests compare records and
+/// platforms, which have no `==`, since an unknown system must never equal
+/// another ([`Platform::unlike`]).
+pub(crate) fn as_json<T: serde::Serialize>(value: &T) -> serde_json::Value {
+    serde_json::to_value(value).expect("a record writes as JSON")
+}
+
 /// A scratch folder for the record test `name`, empty.
 pub(crate) fn scratch(name: &str) -> PathBuf {
     let dir = scratch_path(name);

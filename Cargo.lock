@@ -2031,7 +2031,9 @@ dependencies = [
 name = "nakkash-machine"
 version = "0.0.0"
 dependencies = [
+ "insta",
  "libc",
+ "nakkash-hash",
  "rstest",
 ]
 

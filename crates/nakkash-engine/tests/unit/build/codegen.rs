@@ -102,14 +102,32 @@ fn without_a_compiler_that_answers_the_code_generation_is_unknown(#[case] vars: 
     assert_eq!(probe(env(vars)), None);
 }
 
-/// The build script runs again when any input of the hash may have
-/// changed: the compiler, the toolchain chosen, and every flag.
+/// The build script watches the variables of cargo's own environment that
+/// choose the compiler, the toolchain and the flags. The variables only
+/// cargo sets for the script are not watched, since cargo watches only its
+/// own environment: a change of them is a change of flags or profile,
+/// which runs the script again anyway.
+#[rstest]
+#[case::compiler("RUSTC", true)]
+#[case::toolchain("RUSTUP_TOOLCHAIN", true)]
+#[case::flags("RUSTFLAGS", true)]
+#[case::configured_flags("CARGO_BUILD_RUSTFLAGS", true)]
+#[case::encoded_flags("CARGO_ENCODED_RUSTFLAGS", true)]
+#[case::target_features("CARGO_CFG_TARGET_FEATURE", false)]
+#[case::opt_level("OPT_LEVEL", false)]
+#[case::debug("DEBUG", false)]
+fn cargo_watches_only_its_own_environment(#[case] name: &str, #[case] watched: bool) {
+    assert_eq!(WATCHED.contains(&name), watched, "{name}");
+}
+
+/// Every flag hashed is either watched or set by cargo from what is.
 #[test]
-fn every_input_is_watched() {
-    for name in FLAGS
-        .iter()
-        .chain(&["RUSTC", "RUSTUP_TOOLCHAIN", "RUSTFLAGS"])
-    {
-        assert!(WATCHED.contains(name), "{name} is not watched");
+fn every_flag_hashed_is_watched_or_set_by_cargo() {
+    let set_by_cargo = ["CARGO_CFG_TARGET_FEATURE", "OPT_LEVEL", "DEBUG"];
+    for name in FLAGS {
+        assert!(
+            WATCHED.contains(&name) ^ set_by_cargo.contains(&name),
+            "{name}"
+        );
     }
 }
