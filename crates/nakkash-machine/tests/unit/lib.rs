@@ -173,6 +173,8 @@ fn a_linux_system_is_named_with_its_maths_library(#[case] libm: &str, #[case] na
 #[test]
 fn this_machine_names_its_system() {
     let system = system();
+    // Shown with `--nocapture`, to see what a machine names itself.
+    eprintln!("system: {system:?}");
     #[cfg(target_os = "macos")]
     let prefix = Some("macOS ");
     #[cfg(all(target_os = "linux", target_env = "gnu"))]

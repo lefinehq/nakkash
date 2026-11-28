@@ -18,6 +18,17 @@ fn the_maths_library_is_the_shared_object_that_defines_sin() {
     assert_eq!(read(), Some(maths));
 }
 
+/// The `sin` the program calls is the one the loader finds by name in its
+/// global scope: in a plain process the two name one object, so the bound
+/// address is the maths library's own and not an entry of the program.
+#[test]
+fn the_sin_called_is_the_one_the_loader_finds() {
+    // SAFETY: the name is NUL-terminated, and with `RTLD_DEFAULT` `dlsym`
+    // only looks it up in the process's global scope.
+    let found = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"sin".as_ptr()) };
+    assert_eq!(called(), found as usize);
+}
+
 /// A program header of each kind, with each permission.
 fn header(kind: u32, flags: u32) -> Header {
     Header {
@@ -66,7 +77,7 @@ fn loaded_at(base: usize) -> libc::dl_phdr_info {
     // SAFETY: `dl_phdr_info` holds only integers and pointers, for which
     // all zeroes are valid (null pointers).
     let mut info: libc::dl_phdr_info = unsafe { std::mem::zeroed() };
-    info.dlpi_addr = base as libc::Elf64_Addr;
+    info.dlpi_addr = base as _;
     info
 }
 
@@ -84,7 +95,9 @@ fn a_segment_lends_its_file_bytes() {
         readable: true,
         writable: false,
     };
-    assert_eq!(bytes(&info, &segment), Some(&b"code"[..]));
+    // SAFETY: `info` stands for an object loaded at `memory`, whose 16
+    // bytes the segment's 7 from 9 lie within, readable while it lives.
+    assert_eq!(unsafe { bytes(&info, &segment) }, Some(&b"code"[..]));
 }
 
 /// A header that says more file bytes than its segment holds, or a
@@ -107,5 +120,34 @@ fn a_segment_that_does_not_fit_lends_nothing(
         readable: true,
         writable: false,
     };
-    assert_eq!(bytes(&loaded_at(base), &segment), None);
+    let info = loaded_at(base);
+    // SAFETY: nothing is read: each segment is refused before its bytes.
+    assert_eq!(unsafe { bytes(&info, &segment) }, None);
+}
+
+/// A segment that is not the library's content lends nothing, though its
+/// bytes lie in reach: data, one mapped only to run, and a header not
+/// mapped apart.
+#[rstest]
+#[case::data(true, true, true)]
+#[case::execute_only(true, false, false)]
+#[case::not_mapped(false, true, false)]
+fn a_segment_not_hashed_lends_nothing(
+    #[case] loaded: bool,
+    #[case] readable: bool,
+    #[case] writable: bool,
+) {
+    let memory = *b"constants";
+    let info = loaded_at(memory.as_ptr() as usize);
+    let segment = Segment {
+        loaded,
+        start: 0,
+        memory: memory.len(),
+        file: memory.len(),
+        readable,
+        writable,
+    };
+    // SAFETY: nothing is read: each segment is refused before its bytes,
+    // which would lie within `memory` anyway.
+    assert_eq!(unsafe { bytes(&info, &segment) }, None);
 }

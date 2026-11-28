@@ -1,6 +1,15 @@
 //! The maths library the process calls, as the dynamic loader holds it
-//! (Linux with the GNU C library): the loaded object that defines `sin`,
-//! named by the content of its read-only segments ([`library`]).
+//! (Linux with the GNU C library): the loaded object that holds the `sin`
+//! this program calls, named by the content of its read-only segments and
+//! by where in it that `sin` starts ([`library`]).
+//!
+//! The address is the one the program's own calls go to, bound by the
+//! loader at start, not one looked up by name: a library preloaded in
+//! front of glibc's, or a program loaded apart from the global scope,
+//! names the object it really calls. glibc picks one of several versions
+//! of `sin` for the processor (with fused multiply-adds or without, which
+//! `GLIBC_TUNABLES` can also switch); where the chosen one starts tells
+//! them apart, as their bytes are the same library's.
 //!
 //! glibc's maths library (`libm.so.6`) defines every C maths function the
 //! rasteriser calls (`exp`, `sin`, `cos`, `powf`, `atan2`, `hypot`, …), so
@@ -15,8 +24,11 @@ use std::sync::OnceLock;
 
 use crate::library::{self, Segment};
 
-/// The function whose defining object is the maths library.
-const MATHS_SYMBOL: &CStr = c"sin";
+unsafe extern "C" {
+    /// The C library's sine, the function whose object is the maths
+    /// library: the same declaration as the standard library's.
+    safe fn sin(x: f64) -> f64;
+}
 
 /// A loaded library: its name as the loader gives it, and its content
 /// hash.
@@ -26,31 +38,25 @@ pub(crate) struct Loaded {
     /// `/lib/x86_64-linux-gnu/libm.so.6`; only said, never compared.
     #[cfg_attr(not(test), allow(dead_code, reason = "the tests read it"))]
     pub(crate) name: String,
-    /// The hash of its read-only segments ([`library::content_hash`]).
+    /// The hash of where the function called starts in it and of its
+    /// read-only segments ([`library::content_hash`]).
     pub(crate) hash: u128,
 }
 
 /// The maths library the process calls, read once: what is loaded does
-/// not change while it runs. `None` when no loaded object defines `sin`;
-/// when the one that does is the program itself (a static build, or one
-/// that keeps its own entry for the function), so it cannot be told apart;
-/// or when none of its segments can be hashed.
+/// not change while it runs. `None` when no loaded object holds the `sin`
+/// called; when the one that does is the program itself (a static build,
+/// or one that keeps its own entry for the function), so it cannot be told
+/// apart; or when none of its segments can be hashed.
 pub(crate) fn maths_library() -> Option<Loaded> {
     static MATHS: OnceLock<Option<Loaded>> = OnceLock::new();
     MATHS.get_or_init(read).clone()
 }
 
-/// Asks the loader where `sin` is, then walks the loaded objects for the
-/// one that holds it.
+/// Walks the loaded objects for the one that holds the `sin` called.
 fn read() -> Option<Loaded> {
-    // SAFETY: `MATHS_SYMBOL` is NUL-terminated, and with `RTLD_DEFAULT`
-    // `dlsym` only looks the name up in the process's global scope.
-    let address = unsafe { libc::dlsym(libc::RTLD_DEFAULT, MATHS_SYMBOL.as_ptr()) };
-    if address.is_null() {
-        return None;
-    }
     let mut search = Search {
-        address: address as usize,
+        address: called(),
         found: None,
     };
     // SAFETY: `visit` has the signature `dl_iterate_phdr` calls, and
@@ -58,6 +64,11 @@ fn read() -> Option<Loaded> {
     // reads or writes it meanwhile.
     unsafe { libc::dl_iterate_phdr(Some(visit), (&raw mut search).cast()) };
     search.found.flatten()
+}
+
+/// The address the program's calls of `sin` go to.
+fn called() -> usize {
+    sin as extern "C" fn(f64) -> f64 as usize
 }
 
 /// A walk of the loaded objects for the one holding `address`.
@@ -104,14 +115,18 @@ unsafe extern "C" fn visit(
     }
     search.found = Some(name(info).and_then(|name| {
         let hashed = segments.iter().filter(|s| s.hashed());
-        let contents: Option<Vec<(usize, &[u8])>> =
-            hashed.map(|s| Some((s.start, bytes(info, s)?))).collect();
+        // SAFETY: `info` is the loader's description of a loaded object,
+        // lent for the call, and each segment is one of its own headers,
+        // read just above.
+        let contents: Option<Vec<(usize, &[u8])>> = hashed
+            .map(|s| Some((s.start, unsafe { bytes(info, s) }?)))
+            .collect();
         // An object with nothing to hash would be named by the hash of
         // nothing, the same for every such object.
         let contents = contents.filter(|contents| !contents.is_empty());
         Some(Loaded {
             name,
-            hash: library::content_hash(contents?),
+            hash: library::content_hash(search.address - base, contents?),
         })
     }));
     1
@@ -154,17 +169,25 @@ fn segment(header: &Header) -> Segment {
 }
 
 /// The bytes of the segment that came from the file, where the object
-/// `info` describes holds them, for as long as the walk lends `info`;
-/// `None` when the header says more file bytes than the segment holds in
-/// memory, or they would end past the last address.
-fn bytes<'a>(info: &'a libc::dl_phdr_info, segment: &Segment) -> Option<&'a [u8]> {
+/// `info` describes holds them, for as long as `info` is lent; `None` for
+/// a segment that is not hashed ([`Segment::hashed`]), whose file bytes are
+/// more than it holds in memory, or that would end past the last address.
+///
+/// # Safety
+///
+/// `info` must be the loader's description of a loaded object, valid for
+/// as long as it is lent, and `segment` one of that object's own program
+/// headers ([`segment`]).
+unsafe fn bytes<'a>(info: &'a libc::dl_phdr_info, segment: &Segment) -> Option<&'a [u8]> {
     let start = (info.dlpi_addr as usize).checked_add(segment.start)?;
     start.checked_add(segment.file)?;
-    (segment.file <= segment.memory).then_some(())?;
-    // SAFETY: the loader maps a loaded segment's `memory` bytes at
-    // `start`, readable as the caller hashes only readable ones,, its `file` bytes first, and keeps them mapped while the
-    // object is loaded, which it stays during the walk, as `info` lives.
-    // The segment is never written, so the bytes do not change.
+    (segment.hashed() && segment.file <= segment.memory).then_some(())?;
+    // SAFETY: as the caller promises, `segment` is a header of the loaded
+    // object `info` describes. The loader maps a loaded segment's `memory`
+    // bytes at `start`, its `file` bytes first, and keeps them mapped
+    // while the object is loaded, which it stays while `info` is lent. The
+    // segment is readable and never written, as checked above, so its
+    // bytes can be read and do not change.
     Some(unsafe { std::slice::from_raw_parts(start as *const u8, segment.file) })
 }
 

@@ -73,7 +73,7 @@ fn the_platform_names_this_processor_its_simd_level_system_and_code_generation()
     assert_eq!(platform.system, nakkash_machine::system());
     // The tests were built by cargo, whose compiler answers `-vV`.
     assert!(platform.codegen.is_some(), "{platform:?}");
-    assert_eq!(as_json(&Platform::current()), as_json(&platform));
+    assert_eq!(Platform::current().unlike(&platform), None);
 }
 
 /// The code generation is read from what the build script wrote: a hash,

@@ -106,6 +106,9 @@ fn the_small_library_hashes_its_first_two_segments() {
     assert_eq!(hashed, [0, 0x1000]);
 }
 
+/// Where the function called starts in the library.
+const ENTRY: usize = 0x1004;
+
 /// The two read-only segments of a library, as a loader would lend them.
 const CONSTANTS: &[u8] = b"\x7fELF constants";
 const CODE: &[u8] = b"sin cos exp";
@@ -113,14 +116,14 @@ const CODE: &[u8] = b"sin cos exp";
 #[test]
 fn the_same_library_hashes_the_same() {
     let parts = || [(0, CONSTANTS), (0x1000, CODE)];
-    assert_eq!(content_hash(parts()), content_hash(parts()));
+    assert_eq!(content_hash(ENTRY, parts()), content_hash(ENTRY, parts()));
 }
 
 /// The hash is pinned: a change to its tag or form names every library
 /// anew, so every fidelity record made before it is refused once.
 #[test]
 fn the_content_hash_is_pinned() {
-    let hash = content_hash([(0, CONSTANTS), (0x1000, CODE)]);
+    let hash = content_hash(ENTRY, [(0, CONSTANTS), (0x1000, CODE)]);
     insta::assert_snapshot!(format!("{hash:032x}"));
 }
 
@@ -137,18 +140,27 @@ fn the_content_hash_is_pinned() {
 #[case::segments_swapped([(0x1000, CODE), (0, CONSTANTS)])]
 fn every_byte_start_and_boundary_changes_the_hash(#[case] parts: [(usize, &[u8]); 2]) {
     assert_ne!(
-        content_hash(parts),
-        content_hash([(0, CONSTANTS), (0x1000, CODE)])
+        content_hash(ENTRY, parts),
+        content_hash(ENTRY, [(0, CONSTANTS), (0x1000, CODE)])
     );
+}
+
+/// Where the function called starts changes the hash: the same library
+/// calling another version of the function for the processor (with fused
+/// multiply-adds or without) may round to other bits.
+#[test]
+fn where_the_function_called_starts_changes_the_hash() {
+    let parts = || [(0, CONSTANTS), (0x1000, CODE)];
+    assert_ne!(content_hash(0x1008, parts()), content_hash(ENTRY, parts()));
 }
 
 /// A segment more or less is another library, even one with no bytes.
 #[test]
 fn the_number_of_segments_changes_the_hash() {
-    let two = content_hash([(0, CONSTANTS), (0x1000, CODE)]);
-    assert_ne!(content_hash([(0, CONSTANTS)]), two);
+    let two = content_hash(ENTRY, [(0, CONSTANTS), (0x1000, CODE)]);
+    assert_ne!(content_hash(ENTRY, [(0, CONSTANTS)]), two);
     assert_ne!(
-        content_hash([(0, CONSTANTS), (0x1000, CODE), (0x5000, &[][..])]),
+        content_hash(ENTRY, [(0, CONSTANTS), (0x1000, CODE), (0x5000, &[][..])]),
         two
     );
 }
@@ -158,12 +170,13 @@ fn the_number_of_segments_changes_the_hash() {
 #[test]
 fn a_library_hashes_apart_from_other_content() {
     assert_ne!(
-        content_hash([(0, CODE)]),
+        content_hash(ENTRY, [(0, CODE)]),
         nakkash_hash::content_hash(TAG, CODE)
     );
     assert_ne!(
-        content_hash([(0, CODE)]),
+        content_hash(ENTRY, [(0, CODE)]),
         nakkash_hash::ContentHasher::new("nakkash.build.codegen")
+            .u64(ENTRY as u64)
             .u64(0)
             .bytes(CODE)
             .finish()

@@ -150,7 +150,7 @@ fn a_reuse_list_reads_its_folders_from_its_own_folder() {
     fs::write(&path, reuse_json(&Platform::current(), "records/m001")).unwrap();
     let reuse = Reuse::read(&path).unwrap();
     assert_eq!(reuse.schema, ReuseSchema::V1);
-    assert_eq!(as_json(&reuse.platform), as_json(&Platform::current()));
+    assert_eq!(reuse.platform.unlike(&Platform::current()), None);
     let sample = &reuse.samples["m001"];
     assert_eq!(sample.dir, dir.join("records/m001"));
     assert_eq!(sample.frames, BTreeMap::from([(1, identities(1))]));

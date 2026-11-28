@@ -1,6 +1,7 @@
 //! A loaded shared library named by its content: which of the process's
-//! loaded objects holds an address, and the hash of the segments it was
-//! loaded from that the process never writes. Kept apart from asking the
+//! loaded objects holds an address, and the hash of where in it the
+//! function called starts and of the segments it was loaded from that the
+//! process never writes. Kept apart from asking the
 //! dynamic loader (`loader.rs`, Linux only), so every platform tests it.
 //!
 //! The hash covers the library as the process runs it, not the file on
@@ -59,10 +60,17 @@ pub(crate) fn holds(segments: &[Segment], base: usize, address: usize) -> bool {
     })
 }
 
-/// The content hash of a loaded library: each hashed segment's start, then
-/// its bytes from the file, in the order the object lists them.
-pub(crate) fn content_hash<'a>(segments: impl IntoIterator<Item = (usize, &'a [u8])>) -> u128 {
+/// The content hash of a loaded library: `entry`, where in it the function
+/// the process calls starts, which tells apart the versions of one
+/// function a library chooses among for the processor; then each hashed
+/// segment's start and its bytes from the file, in the order the object
+/// lists them.
+pub(crate) fn content_hash<'a>(
+    entry: usize,
+    segments: impl IntoIterator<Item = (usize, &'a [u8])>,
+) -> u128 {
     let mut hasher = ContentHasher::new(TAG);
+    hasher.u64(entry as u64);
     for (start, bytes) in segments {
         hasher.u64(start as u64).bytes(bytes);
     }

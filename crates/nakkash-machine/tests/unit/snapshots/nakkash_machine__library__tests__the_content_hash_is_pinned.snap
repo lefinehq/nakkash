@@ -2,4 +2,4 @@
 source: crates/nakkash-machine/src/../tests/unit/library.rs
 expression: "format!(\"{hash:032x}\")"
 ---
-f72a0e4fb5fa2e80989ae12d418d0958
+bc8f3b0fcc94db8967a1783bad1bf416

@@ -245,14 +245,16 @@ pub fn swap() -> Option<Swap> {
 /// system's own library:
 ///
 /// - on macOS its product version and build (`macOS 26.3, build 25D125`).
-///   The build changes with every update of the system, and the maths
-///   library (`libsystem_m`) lives in the system's shared library cache,
-///   not in a file of its own, so it is not hashed apart;
+///   The maths library (`libsystem_m`) lives in the system's shared
+///   library cache, on the sealed system volume, which changes only with an
+///   update of the system, and every update changes the build, so the build
+///   stands for the library and it is not hashed apart;
 /// - on Linux the version of the GNU C library (glibc), the content hash of
 ///   the maths library loaded, and the kernel's release (`glibc 2.39, libm
 ///   <32 hex digits>, Linux 6.8.0-49-generic`). glibc's version is its
 ///   upstream one, which a distribution's patch update keeps, so the hash
-///   names the library the process calls by its bytes.
+///   names the library the process calls by its bytes and by the version of
+///   `sin` it calls.
 ///
 /// `None` when the system does not say, or on any other system or C
 /// library: a caller must never take an unknown system for a known one.
