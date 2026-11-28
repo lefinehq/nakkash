@@ -9,13 +9,8 @@ use rstest::rstest;
 
 use super::*;
 use crate::diff::{Error, FrameDiff};
-use crate::record::tests::{room, scratch};
+use crate::record::tests::{room, scratch, scratch_path};
 use crate::record::{Build, Schema, Times, read_pinned, write_sample};
-
-/// The path of the scratch folder for `name`, made or not.
-fn scratch_of(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("nakkash-record-{}-{name}", std::process::id()))
-}
 
 /// An identified build, as a binary built in its checkout names itself.
 fn build() -> Build {
@@ -242,7 +237,7 @@ fn a_missing_reuse_list_is_an_io_error() {
 fn a_record_opened_for_reuse_holds_what_its_folder_holds() {
     let reusing = opened("open");
     assert_eq!(reusing.record(), &record());
-    assert_eq!(reusing.dir(), scratch_of("reuse-open"));
+    assert_eq!(reusing.dir(), scratch_path("reuse-open"));
 }
 
 /// A record whose build does not know its code, or that was drawn on
@@ -506,7 +501,7 @@ fn every_reuse_error_message() {
         .map(|(what, error)| format!("{what}: {error}"))
         .collect::<Vec<_>>()
         .join("\n")
-        .replace(&scratch_of("").display().to_string(), "<scratch>/")
+        .replace(&scratch_path("").display().to_string(), "<scratch>/")
         .replace(&platform.target, "<this target>")
         .replace(
             platform
