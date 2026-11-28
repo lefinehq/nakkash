@@ -34,9 +34,22 @@ pub(crate) fn named(index: usize, drawn: &Drawn) -> FrameRecord {
     }
 }
 
+/// The path of the scratch folder for `name` in the running test, made or
+/// not. It holds the test's thread name, which the test harness sets to the
+/// test's full name with its case, so two cases of one test that pass the
+/// same `name` never share a folder when tests run as threads of one process.
+pub(crate) fn scratch_path(name: &str) -> PathBuf {
+    let thread = std::thread::current();
+    let test = thread.name().unwrap_or("main").replace("::", ".");
+    std::env::temp_dir().join(format!(
+        "nakkash-record-{}-{test}-{name}",
+        std::process::id()
+    ))
+}
+
 /// A scratch folder for the record test `name`, empty.
 pub(crate) fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("nakkash-record-{}-{name}", std::process::id()));
+    let dir = scratch_path(name);
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create a scratch folder");
     dir
