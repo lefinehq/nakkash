@@ -39,6 +39,17 @@ serde_json.workspace = true
 # Footage paths written relative to the scene that names them.
 pathdiff = "0.2"
 rayon.workspace = true
+# The record's pixel files: their header, and our pixels compressed.
+binrw.workspace = true
+# The hashes a record names pixels and masks by.
+nakkash-hash = { path = "../nakkash-hash" }
+lz4_flex.workspace = true
+# The record's hexadecimal hashes.
+winnow.workspace = true
+
+[build-dependencies]
+# The build script hashes the code generation with the one content hash.
+nakkash-hash = { path = "../nakkash-hash" }
 
 [dev-dependencies]
 # The import tests bake.
@@ -46,6 +57,7 @@ nakkash-import = { path = "../nakkash-import", features = ["bake"] }
 rstest.workspace = true
 pretty_assertions.workspace = true
 insta.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

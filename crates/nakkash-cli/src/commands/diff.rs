@@ -36,6 +36,8 @@ pub fn run(scene: &Path, args: &Args<'_>) -> Result<ExitCode> {
         tolerance: args.tolerance,
         images: args.images.map(Path::to_path_buf),
         ignore: args.ignore.to_vec(),
+        record: None,
+        reuse: None,
     };
     let diff = session.diff(&options)?;
     print!("{}", summary(&diff));

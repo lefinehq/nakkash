@@ -139,6 +139,29 @@ fn io_names_the_action_the_file_and_the_cause() {
     assert_eq!(d.to_string(), "cannot write `dir/scene.json`: denied");
 }
 
+/// One constructor for a file that is not what it should be: the file is
+/// the place, as written, so the message reads `{file}: {message}`.
+#[test]
+fn invalid_file_places_the_diagnostic_at_the_file() {
+    let path = std::path::Path::new("records/m001/record.json");
+    let d = Diagnostic::invalid_file(path, "frame 1 has the index 2");
+    assert_eq!(d.kind, Kind::Invalid);
+    assert_eq!(d.path, Some(Place::other("records/m001/record.json")));
+    assert_eq!(d.message, "frame 1 has the index 2");
+    assert_eq!(d.expected, None);
+    assert_eq!(
+        d.expected("a record").to_string(),
+        "records/m001/record.json: frame 1 has the index 2; expected a record"
+    );
+}
+
+/// A file's path is never read as a place in a scene, whatever it holds.
+#[test]
+fn invalid_file_keeps_a_path_that_reads_as_a_scene_place() {
+    let d = Diagnostic::invalid_file(std::path::Path::new("card/title.in"), "bad");
+    assert_eq!(d.path, Some(Place::Other("card/title.in".to_owned())));
+}
+
 #[test]
 fn every_kind_exits_2() {
     let kinds = [

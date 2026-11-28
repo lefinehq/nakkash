@@ -1,0 +1,100 @@
+---
+source: crates/nakkash-engine/src/record/../../tests/unit/record/sample.rs
+expression: json
+---
+{
+  "schema": "nakkash.FidelityRecord.1",
+  "sample": "m001",
+  "platform": {
+    "target": "aarch64-macos",
+    "simd": "neon",
+    "system": "macOS 26.3, build 25D125",
+    "codegen": "0000000000000000000000000000c0de"
+  },
+  "build": {
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "tree": "0000000000000000000000000000d1f7",
+    "profile": "release"
+  },
+  "entry": "0000000000000000000000000000feed",
+  "scene": "000000000000000000000000000005ce",
+  "replay": "000000000000000000000000000007e9",
+  "frames": [
+    {
+      "index": 0,
+      "file": "f0001.png",
+      "time": 0.0,
+      "ours": "00000000000000000000000000001111",
+      "bare": "00000000000000000000000000002222",
+      "shown": "00000000000000000000000000003333",
+      "ours_pixels": "ffffffffffffffffffffffffffffffff",
+      "coverage": "00000000000000000000000000004444",
+      "shown_mask": "00000000000000000000000000005555",
+      "diff": {
+        "file": "f0001.png",
+        "time": 0.0,
+        "content": {
+          "pixels": 6,
+          "mean": 0.0123456789012345,
+          "psnr": 38.16970045574605,
+          "failing": 0.00617283945061725
+        },
+        "drawn": {
+          "pixels": 4,
+          "mean": 0.024691357802469,
+          "psnr": 32.14910054246643,
+          "failing": 0.0123456789012345
+        },
+        "union": {
+          "pixels": 5,
+          "mean": 0.0,
+          "psnr": null,
+          "failing": 0.0
+        }
+      },
+      "ms": {
+        "draw": 12.5,
+        "coverage": 3.25,
+        "shown": 2.0
+      }
+    },
+    {
+      "index": 1,
+      "file": "f0002.png",
+      "time": 0.04,
+      "ours": "00000000000000000000000000001112",
+      "bare": "00000000000000000000000000002223",
+      "shown": null,
+      "ours_pixels": "fffffffffffffffffffffffffffffffe",
+      "coverage": "00000000000000000000000000004444",
+      "shown_mask": null,
+      "diff": {
+        "file": "f0002.png",
+        "time": 0.04,
+        "content": {
+          "pixels": 6,
+          "mean": 0.30000000000000004,
+          "psnr": 10.45757490560675,
+          "failing": 0.15000000000000002
+        },
+        "drawn": {
+          "pixels": 4,
+          "mean": 0.6000000000000001,
+          "psnr": 4.436974992327126,
+          "failing": 0.30000000000000004
+        },
+        "union": {
+          "pixels": 5,
+          "mean": 0.0,
+          "psnr": null,
+          "failing": 0.0
+        }
+      },
+      "ms": {
+        "draw": 12.5,
+        "coverage": 3.25,
+        "shown": 0.0
+      }
+    }
+  ]
+}

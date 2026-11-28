@@ -30,6 +30,7 @@ pub mod instance;
 mod level;
 mod mix;
 mod pictures;
+pub mod record;
 mod relocate;
 mod render;
 mod session;
@@ -42,11 +43,20 @@ pub mod vary;
 #[path = "../tests/unit/support.rs"]
 mod test_support;
 
-pub use diff::{Diff, DiffOptions, Error as DiffError, Floor, FrameDiff, Pooled};
+/// The build script's code generation probe, tested with the engine's
+/// tests.
+#[cfg(test)]
+#[path = "../build/codegen.rs"]
+mod codegen;
+
+pub use diff::{
+    Diff, DiffOptions, Error as DiffError, Floor, FrameCounts, FrameDiff, Pooled, RecordedDiff,
+    Replayer, frame_counts,
+};
 pub use export::export_project;
 pub use fidelity::{
-    Change, Floors, Ledger, Manifest, Measure, NOISE, Rule, Sample, Scoreboard, Verdict, Window,
-    compare, measure,
+    Change, Floors, Ledger, Manifest, Measure, MeasureOptions, NOISE, Recording, Rule, Sample,
+    Scoreboard, Verdict, Window, compare, measure,
 };
 pub use fonts::{
     LOCK_EXTENSION, LayoutJudge, add_fonts_entry, font_names, lock_path, missing_fonts,

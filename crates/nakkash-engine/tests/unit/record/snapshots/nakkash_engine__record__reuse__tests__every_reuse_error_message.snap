@@ -1,0 +1,15 @@
+---
+source: crates/nakkash-engine/src/record/../../tests/unit/record/reuse.rs
+expression: text
+---
+other platform: <scratch>/reuse-errors/reuse.json: the reuse list was made for another platform: its target is other-os, and this machine's is <this target>; expected a reuse list made on this platform
+unidentified build: <scratch>/reuse-errors-build/record.json: the record was made by a build that does not know its commit; expected a record made on this platform by a build that knows its commit; record the sample again
+record of another system: <scratch>/reuse-errors-platform/record.json: the record was drawn on another platform: its system is other 1.0, build 1, and this machine's is <this system>; expected a record made on this platform by a build that knows its commit; record the sample again
+record of an unknown code generation: <scratch>/reuse-errors-codegen/record.json: the record was drawn on another platform: its code generation is unknown, and an unknown code generation matches none; expected a record made on this platform by a build that knows its commit; record the sample again
+not in the record: <scratch>/reuse-errors-short/record.json: frame 4 is vouched for, but the record holds 3 frames; expected a record of the frame's lists at the frame's time; record the sample again, or leave the frame out of the reuse list
+other lists: <scratch>/reuse-errors-lists/record.json: frame 1 draws ours 00000000000000000000000000000101, bare 00000000000000000000000000000201, shown 00000000000000000000000000000300, and its record names ours 00000000000000000000000000000001, bare 00000000000000000000000000000201, shown none; expected a record of the frame's lists at the frame's time; record the sample again, or leave the frame out of the reuse list
+other time: <scratch>/reuse-errors-time/record.json: frame 1 is at 0.1s, and its record at 0.25s; expected a record of the frame's lists at the frame's time; record the sample again, or leave the frame out of the reuse list
+same folder: <scratch>/reuse-errors-same/record.json: the run would record into <scratch>/reuse-errors-same, the folder it reuses; expected a record folder other than the one the run reuses
+recorded again: <scratch>/reuse-errors-pin/record.json: the record hashes to <hash now>, not to the <hash judged> the reuse list was made from; expected the record the runner judged; make the reuse list again from the records as they are
+not begun: <scratch>/reuse-errors-not-begun/record.json: the folder holds a record, and a recording into it has not begun; expected a recording begun with `begin_recording`, which makes the folder and removes its record first
+not made: <scratch>/reuse-errors-not-begun/never-made/record.json: the folder does not exist, and a recording into it has not begun; expected a recording begun with `begin_recording`, which makes the folder and removes its record first

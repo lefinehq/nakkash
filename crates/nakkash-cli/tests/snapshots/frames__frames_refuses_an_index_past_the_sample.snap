@@ -1,0 +1,5 @@
+---
+source: crates/nakkash-cli/tests/frames.rs
+expression: stderr(&out)
+---
+error: frame 3 is past the sample's 3 frames; expected a frame index from 0 to 2

@@ -2,16 +2,65 @@
 //! line of numbers per sample, and compare them with a ledger. The score is
 //! given over each frame's codec floor, then strictly (D69). A sample
 //! measured over another background than its project's says so.
+//!
+//! With `--record DIR --record-cap GIB`, each sample's frames are recorded
+//! under `DIR` (D94), within the cap, which must fit in the free space
+//! first; with `--reuse FILE`, the frames a runner's list vouches for are
+//! read from their records in place of drawing them, and the ledger is the
+//! one drawing every frame writes, byte for byte.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
+use std::str::FromStr;
+use std::sync::Arc;
 
+use nakkash_engine::record::{Build, Platform, Quota, Reuse};
 use nakkash_engine::{
-    Change, Diagnostic, Ledger, Manifest, Measure, Result, Rule, Sample, Scoreboard, Verdict,
-    Window,
+    Change, Diagnostic, Ledger, Manifest, Measure, MeasureOptions, Recording, Result, Rule, Sample,
+    Scoreboard, Verdict, Window,
 };
+
+use crate::build_identity;
+
+/// The most a run may write into its records, as `--record-cap` takes it:
+/// a positive number of gibibytes, such as `8` or `0.5`, of at least one
+/// byte.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecordCap {
+    /// The cap in bytes, rounded down.
+    bytes: u64,
+}
+
+impl RecordCap {
+    /// The cap in bytes.
+    pub fn bytes(self) -> u64 {
+        self.bytes
+    }
+}
+
+impl FromStr for RecordCap {
+    type Err = String;
+
+    fn from_str(text: &str) -> std::result::Result<RecordCap, String> {
+        let not_a_size = || format!("`{text}` is not a positive number of gibibytes, such as `8`");
+        let gib: f64 = text.parse().map_err(|_| not_a_size())?;
+        if !(gib.is_finite() && gib > 0.0) {
+            return Err(not_a_size());
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a positive size, rounded down to whole bytes and capped at the most a u64 holds"
+        )]
+        let bytes = (gib * f64::from(1u32 << 30)) as u64;
+        match bytes {
+            0 => Err(not_a_size()),
+            bytes => Ok(RecordCap { bytes }),
+        }
+    }
+}
 
 /// What to measure and where to keep it.
 pub struct Args<'a> {
@@ -27,12 +76,39 @@ pub struct Args<'a> {
     pub images: bool,
     /// Only these samples, by id; all when empty.
     pub only: &'a [String],
+    /// Where to record each sample's frames, and the most the records may
+    /// take, if anywhere.
+    pub record: Option<(&'a Path, RecordCap)>,
+    /// The runner's list of frames to reuse, if any.
+    pub reuse: Option<&'a Path>,
+}
+
+/// Says on stderr, when `build` cannot name its code, that the records it
+/// writes cannot be reused: none ever is, since nothing says what drew it.
+fn unidentified(build: &Build) -> Option<&'static str> {
+    (!build.identified()).then_some(
+        "warning: this build does not know its commit (built without git, or outside its checkout), so the records it writes cannot be reused",
+    )
+}
+
+/// Says on stderr, when `platform` does not know its system or code
+/// generation, that the records written on it cannot be reused: an unknown
+/// part matches nothing ([`Platform::unlike`]).
+fn unknown_platform(platform: &Platform) -> Option<String> {
+    platform.unlike(platform).map(|why| {
+        format!("warning: the records this run writes cannot be reused, since this machine is not fully known: {why}")
+    })
 }
 
 /// Measures the samples, prints their numbers, what moved since the
 /// ledger and the score, and writes the ledger when asked. Exits 1 when a sample cannot
 /// be measured, or when a number got worse and the ledger is not being
 /// rewritten to accept it.
+///
+/// # Errors
+/// As [`Manifest::read`], [`Ledger::read`], [`Reuse::read`] and
+/// [`Quota::within`]: a cap that does not fit in the free space is an I/O
+/// error before anything is written.
 pub fn run(args: &Args<'_>) -> Result<ExitCode> {
     let manifest = Manifest::read(args.manifest)?;
     let before = match args.ledger {
@@ -41,11 +117,35 @@ pub fn run(args: &Args<'_>) -> Result<ExitCode> {
     };
     let mut after = before.clone();
     let mut failed = false;
+    // The cap is held to the free space before anything is written.
+    let record = match args.record {
+        Some((dir, cap)) => {
+            let quota = Arc::new(Quota::within(dir, cap.bytes())?);
+            let build = build_identity::current();
+            if let Some(warning) = unidentified(&build) {
+                eprintln!("{warning}");
+            }
+            if let Some(warning) = unknown_platform(&Platform::current()) {
+                eprintln!("{warning}");
+            }
+            Some(Recording {
+                dir: dir.to_path_buf(),
+                build,
+                quota,
+            })
+        }
+        None => None,
+    };
+    let options = MeasureOptions {
+        images: args.images,
+        record,
+        reuse: args.reuse.map(Reuse::read).transpose()?.map(Arc::new),
+    };
     for sample in &manifest.samples {
         if !args.only.is_empty() && !args.only.contains(&sample.id) {
             continue;
         }
-        match nakkash_engine::measure(sample, args.work, args.images) {
+        match nakkash_engine::measure(sample, args.work, &options) {
             Ok(measure) => {
                 print_measure(&sample.id, &measure);
                 after.samples.insert(sample.id.clone(), measure);
@@ -275,3 +375,7 @@ fn print_score(board: &Scoreboard, strict: &Scoreboard, floored: usize) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/commands/fidelity.rs"]
+mod tests;

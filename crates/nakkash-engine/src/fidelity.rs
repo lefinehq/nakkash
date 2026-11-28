@@ -26,13 +26,19 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use nakkash_format::{Address, Diagnostic, Kind, Result};
+use nakkash_hash::content_hash;
 use nakkash_import::map::Options;
 use serde::{Deserialize, Serialize};
 
 use crate::diff::{Floor, FrameDiff, file_name};
+use crate::record::{
+    Build, Hex128, Platform, Quota, Reuse, Reusing, SampleRecord, Schema, Target, begin_recording,
+    refuse_work_folder, write_sample, write_scene,
+};
 use crate::{
     DiffOptions, Session, import_scene, measure_layouts, substitute_fonts, write_document,
 };
@@ -46,7 +52,7 @@ pub struct Manifest {
 }
 
 /// One sample: a project, the composition to import, and its reference.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sample {
     /// The id the ledger knows it by; never a product or template name.
@@ -90,6 +96,12 @@ pub struct Sample {
     /// is measured over it in place of the project's.
     #[serde(default)]
     pub bg: Option<String>,
+    /// The folder of the manifest the sample was read from, which its
+    /// relative paths were read from; empty for a sample made otherwise.
+    /// Not part of the entry: its paths are hashed relative to it
+    /// ([`Sample::entry`]).
+    #[serde(skip)]
+    pub folder: PathBuf,
 }
 
 /// The codec floor of each reference frame of a sample, as its floor file
@@ -177,13 +189,98 @@ impl Floors {
     }
 }
 
+/// The tag of [`Sample::entry`].
+const ENTRY: &str = "nakkash.record.entry";
+
+impl Sample {
+    /// The content hash of this entry as serialised, its paths relative to
+    /// its manifest's folder, so a manifest named another way (`m.json`,
+    /// `./m.json` or from the root) gives the same entry: a record names
+    /// the entry it was made from, and a sample whose entry changed is a
+    /// changed sample, drawn whole.
+    ///
+    /// # Errors
+    /// An invalid diagnostic when the entry cannot be serialised, such as
+    /// a path that is not Unicode.
+    pub fn entry(&self) -> Result<Hex128> {
+        let mut entry = self.clone();
+        for path in entry.paths() {
+            if let Ok(relative) = path.strip_prefix(&self.folder) {
+                *path = relative.to_path_buf();
+            }
+        }
+        let bytes = serde_json::to_vec(&entry).map_err(|e| {
+            Diagnostic::new(
+                Kind::Invalid,
+                format!("cannot hash the manifest entry: {e}"),
+            )
+            .expected("a manifest entry whose paths are Unicode")
+        })?;
+        Ok(Hex128(content_hash(ENTRY, &bytes)))
+    }
+
+    /// The paths a manifest names relative to its folder: the project, the
+    /// reference, the fonts and the floor file.
+    fn paths(&mut self) -> impl Iterator<Item = &mut PathBuf> {
+        [&mut self.project, &mut self.reference]
+            .into_iter()
+            .chain(&mut self.fonts)
+            .chain(&mut self.floor)
+    }
+
+    /// Refuses an id that is not one folder name: a sample's work and
+    /// record folders are named by it, and `""`, `.`, `..`, `a/b` or a path
+    /// from the root would name another folder.
+    ///
+    /// # Errors
+    /// An invalid diagnostic naming the id.
+    pub fn check_id(&self) -> Result<()> {
+        let mut parts = Path::new(&self.id).components();
+        match (parts.next(), parts.next()) {
+            (Some(Component::Normal(name)), None) if name == self.id.as_str() => Ok(()),
+            _ => Err(Diagnostic::new(
+                Kind::Invalid,
+                format!("the sample id `{}` is not one folder name", self.id),
+            )
+            .expected("an id that names one folder, such as `m001`, with no `/`, `.` or `..`")),
+        }
+    }
+}
+
+/// How [`measure`] runs, besides the measure itself.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MeasureOptions {
+    /// Whether to write an error image per frame, into `errors/` in the
+    /// sample's work folder.
+    pub images: bool,
+    /// Where and with what build to record the sample, if anywhere.
+    pub record: Option<Recording>,
+    /// The frames a runner allows to be reused, if any.
+    pub reuse: Option<Arc<Reuse>>,
+}
+
+/// Where a fidelity run records its samples, and what build it is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Recording {
+    /// The folder of the records: each sample's goes into the folder named
+    /// by its id.
+    pub dir: PathBuf,
+    /// The build drawing them, as the binary names itself.
+    pub build: Build,
+    /// The room the run's records may take, shared by its samples: the
+    /// sample whose write would pass it fails, and every sample after it is
+    /// refused unmeasured; the records of the samples before it are kept.
+    pub quota: Arc<Quota>,
+}
+
 impl Manifest {
     /// Reads the manifest at `path`; relative paths in it are relative to
     /// its folder.
     ///
     /// # Errors
     /// An I/O diagnostic when the file cannot be read, or an invalid one
-    /// when it is not a manifest, with where.
+    /// when it is not a manifest, with where, or names a sample by an id
+    /// that is not one folder name ([`Sample::check_id`]).
     pub fn read(path: &Path) -> Result<Manifest> {
         let text = fs::read_to_string(path).map_err(|e| Diagnostic::io("read", path, &e))?;
         let mut manifest: Manifest = serde_json::from_str(&text).map_err(|e| {
@@ -193,11 +290,12 @@ impl Manifest {
         })?;
         let base = path.parent().unwrap_or(Path::new("."));
         for sample in &mut manifest.samples {
-            for path in [&mut sample.project, &mut sample.reference]
-                .into_iter()
-                .chain(&mut sample.fonts)
-                .chain(&mut sample.floor)
-            {
+            sample.check_id().map_err(|d| {
+                let message = format!("{}: {}", path.display(), d.message);
+                Diagnostic { message, ..d }
+            })?;
+            sample.folder = base.to_path_buf();
+            for path in sample.paths() {
                 *path = base.join(&*path);
             }
         }
@@ -361,17 +459,59 @@ fn round(value: &mut serde_json::Value) {
 /// ([`substitute_fonts`]), and every use counts as unsupported, so the
 /// sample is measured without its gap being hidden.
 ///
+/// With [`MeasureOptions::record`], the sample is recorded into its folder,
+/// within the run's quota: the folder's record is removed before anything
+/// else, the frames are written as they are drawn, then the measured scene
+/// and its [`Replay`](crate::record::Replay), and the record
+/// ([`SampleRecord`]) last, once the whole sample has measured, so a sample
+/// that fails leaves none. The sample whose write would pass the quota
+/// fails, and a run whose quota is spent measures nothing more: each sample
+/// after it is refused, unmeasured, before its recording begins, while the
+/// records of the samples before it are kept. With
+/// [`MeasureOptions::reuse`] naming the sample, its record is opened
+/// ([`Reusing::open`]) and its frames stand in for draws where the runner
+/// vouches for them ([`Reusing::frame`]); a record made from another entry
+/// ([`Sample::entry`]) is not reused, and the sample is drawn whole.
+///
 /// # Errors
 /// The import's, the session's or the diff's diagnostics, under the
 /// sample's id; text that cannot be laid out (a glyph no face has) is an
 /// error too, since a measure without it would flatter the sample, and so
 /// are floors that do not give one for each reference frame and a
-/// background that is not a colour.
-pub fn measure(sample: &Sample, work: &Path, images: bool) -> Result<Measure> {
+/// background that is not a colour; and so are a record that cannot be
+/// opened for reuse or written, and a reused frame that cannot be read.
+pub fn measure(sample: &Sample, work: &Path, options: &MeasureOptions) -> Result<Measure> {
     let under = |d: Diagnostic| {
         let message = format!("sample `{}`: {}", sample.id, d.message);
         Diagnostic { message, ..d }
     };
+    let listed = (options.reuse.as_ref()).and_then(|reuse| reuse.samples.get(&sample.id));
+    // The recording begins first, so a sample that fails anywhere leaves no
+    // record, not even the one of the run before it.
+    let recording = match &options.record {
+        Some(record) => {
+            sample.check_id().map_err(under)?;
+            // A run whose records reached their cap begins no recording, so
+            // the sample keeps the record it had.
+            record.quota.check().map_err(under)?;
+            let dir = record.dir.join(&sample.id);
+            // The work folder is written by every run, so a record there
+            // would be written over.
+            refuse_work_folder(&dir, &work.join(&sample.id)).map_err(under)?;
+            begin_recording(&dir, listed.map(|listed| listed.dir.as_path())).map_err(under)?;
+            Some((dir, record))
+        }
+        None => None,
+    };
+    // Only a run that records or reuses names its entry.
+    let entry = (recording.is_some() || listed.is_some())
+        .then(|| sample.entry())
+        .transpose()
+        .map_err(under)?;
+    // A record made from another entry is of another sample: drawn whole.
+    let reusing = (listed.map(Reusing::open).transpose().map_err(under)?)
+        .filter(|reusing| Some(reusing.record().entry) == entry)
+        .map(Arc::new);
     let dir = work.join(&sample.id);
     fs::create_dir_all(&dir).map_err(|e| under(Diagnostic::io("create", &dir, &e)))?;
     let fonts = sample
@@ -379,28 +519,31 @@ pub fn measure(sample: &Sample, work: &Path, images: bool) -> Result<Measure> {
         .iter()
         .map(|font| absolute(font).display().to_string())
         .collect();
-    let options = Options {
+    let import_options = Options {
         comp: sample.comp.clone(),
         fonts,
         ..Options::default()
     };
     // Footage is named by absolute paths, as fonts are, so the scene finds
     // it from the work folder without a copy.
-    let mut import = import_scene(&sample.project, &options, None).map_err(under)?;
+    let mut import = import_scene(&sample.project, &import_options, None).map_err(under)?;
     // The sample's fonts are absolute, so the scene finds them from anywhere.
     let unset: Session = write_document(&import.json).parse().map_err(under)?;
     let fonts = unset.fonts().map_err(under)?;
     substitute_fonts(&mut import, fonts).map_err(under)?;
-    measure_layouts(&sample.project, &options, None, &mut import, fonts).map_err(under)?;
+    measure_layouts(&sample.project, &import_options, None, &mut import, fonts).map_err(under)?;
     // Only the measured scene changes: the background is how the reference
     // was rendered, not what the project holds.
     if let (Some(bg), Some(scene)) = (&sample.bg, import.json.as_object_mut()) {
         scene.insert("bg".into(), serde_json::json!(bg));
     }
     let scene = dir.join("scene.json");
-    fs::write(&scene, write_document(&import.json))
-        .map_err(|e| under(Diagnostic::io("write", &scene, &e)))?;
-    let session = Session::open(&scene).map_err(under)?;
+    let text = write_document(&import.json);
+    fs::write(&scene, &text).map_err(|e| under(Diagnostic::io("write", &scene, &e)))?;
+    // Drawn from the text written, not the file read back: another run on
+    // the same work folder may write over it, and the record names this
+    // text's hash.
+    let session = Session::open_text(&scene, text.clone()).map_err(under)?;
     let geometry = session.text_geometry(&import.texts).map_err(under)?;
     let frames = DiffOptions::frames_in(&sample.reference).map_err(under)?;
     let floors = match &sample.floor {
@@ -411,22 +554,27 @@ pub fn measure(sample: &Sample, work: &Path, images: bool) -> Result<Measure> {
         ),
         None => None,
     };
-    let diff = session
-        .diff(&DiffOptions {
-            frames,
-            fps: sample.fps,
-            start: sample.start,
-            tolerance: DiffOptions::TOLERANCE,
-            images: images.then(|| dir.join("errors")),
-            ignore: sample.ignore.clone(),
-        })
-        .map_err(under)?;
+    let diff_options = DiffOptions {
+        frames,
+        fps: sample.fps,
+        start: sample.start,
+        tolerance: DiffOptions::TOLERANCE,
+        images: options.images.then(|| dir.join("errors")),
+        ignore: sample.ignore.clone(),
+        record: (recording.as_ref()).map(|(dir, recording)| Target {
+            dir: dir.clone(),
+            quota: recording.quota.clone(),
+        }),
+        reuse: reusing,
+    };
+    let recorded = session.diff_recorded(&diff_options).map_err(under)?;
+    let diff = recorded.diff;
     let mut unsupported = BTreeMap::new();
     for finding in &import.mapping.unsupported {
         *unsupported.entry(finding.what.clone()).or_insert(0) += 1;
     }
     let worst = geometry.texts.iter().map(|t| t.off()).fold(0.0, f64::max);
-    Ok(Measure {
+    let measure = Measure {
         unsupported,
         texts: geometry.texts.len(),
         texts_within: geometry.texts.len() - geometry.failing().count(),
@@ -448,7 +596,28 @@ pub fn measure(sample: &Sample, work: &Path, images: bool) -> Result<Measure> {
             window(&frames, floors.is_some().then_some(&held[..]), from)
         }),
         bg: sample.bg.clone(),
-    })
+    };
+    if let (Some((dir, recording)), Some(frames), Some(entry)) = (recording, recorded.frames, entry)
+    {
+        // What draws its frames again from the folder alone, then the
+        // record last, which names the recording whole.
+        let quota = &recording.quota;
+        let scene = write_scene(&dir, &text, quota).map_err(under)?;
+        let replay = diff_options.replay(&session).map_err(under)?;
+        let replay = replay.write(&dir, quota).map_err(under)?;
+        let record = SampleRecord {
+            schema: Schema::V1,
+            sample: sample.id.clone(),
+            platform: Platform::current(),
+            build: recording.build.clone(),
+            entry,
+            scene,
+            replay,
+            frames,
+        };
+        write_sample(&dir, &record, quota).map_err(under)?;
+    }
+    Ok(measure)
 }
 
 /// `path` from the filesystem root, so a scene written elsewhere finds it.

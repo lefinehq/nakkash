@@ -20,17 +20,17 @@ use crate::test_support::with_subscriber;
 
 /// A 40x20 scene at 10 fps lasting 1 s: a white square crossing a black
 /// canvas, and a grey bar that a reference may leave out.
-const SCENE: &str = r##"{"nakkash":1,"size":"40x20","fps":10,"dur":"1s","bg":"#000000","layers":[
+pub(crate) const SCENE: &str = r##"{"nakkash":1,"size":"40x20","fps":10,"dur":"1s","bg":"#000000","layers":[
 {"id":"bar","rect":"40x4","fill":"#808080","at":"20 18"},
 {"id":"box","rect":"10x10","fill":"#FFFFFF","anim":{"position":"5,10 -> 35,10 @0-10f"}}]}"##;
 
 /// A session on `text`.
-fn session(text: &str) -> Session {
+pub(crate) fn session(text: &str) -> Session {
     text.parse().expect("a valid scene")
 }
 
 /// A scratch folder for the test `name`, empty.
-fn scratch(name: &str) -> PathBuf {
+pub(crate) fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("nakkash-diff-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create a scratch folder");
@@ -38,7 +38,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 /// Writes `session` drawn at each of `frames` into a new scratch folder.
-fn references(name: &str, session: &Session, frames: &[f64]) -> Vec<PathBuf> {
+pub(crate) fn references(name: &str, session: &Session, frames: &[f64]) -> Vec<PathBuf> {
     let dir = scratch(name);
     frames
         .iter()
@@ -53,7 +53,7 @@ fn references(name: &str, session: &Session, frames: &[f64]) -> Vec<PathBuf> {
 }
 
 /// Options comparing with `frames` at `fps` from the start.
-fn options(frames: Vec<PathBuf>, fps: f64) -> DiffOptions {
+pub(crate) fn options(frames: Vec<PathBuf>, fps: f64) -> DiffOptions {
     DiffOptions {
         frames,
         fps,
@@ -61,6 +61,8 @@ fn options(frames: Vec<PathBuf>, fps: f64) -> DiffOptions {
         tolerance: DiffOptions::TOLERANCE,
         images: None,
         ignore: Vec::new(),
+        record: None,
+        reuse: None,
     }
 }
 
@@ -93,7 +95,7 @@ impl Visit for IsRender {
 }
 
 /// How many renders the engine draws while `body` runs.
-fn renders(body: impl FnOnce()) -> usize {
+pub(crate) fn renders(body: impl FnOnce()) -> usize {
     let renders = Renders::default();
     with_subscriber(tracing_subscriber::registry().with(renders.clone()), body);
     renders.0.load(Ordering::Relaxed)

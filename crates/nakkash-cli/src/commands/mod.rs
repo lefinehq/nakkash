@@ -12,6 +12,7 @@ pub mod edit;
 pub mod export;
 pub mod fidelity;
 pub mod fonts;
+pub mod frames;
 pub mod import;
 pub mod inspect;
 pub mod instance;

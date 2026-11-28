@@ -1,0 +1,19 @@
+[package]
+name = "nakkash-hash"
+description = "The one keyed 128-bit hash of nakkash's content: frame identities, fidelity records and the build's tree, the same in every run and on every machine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# SipHash 1-3 with 128 bits out (D90).
+siphasher = "1"
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

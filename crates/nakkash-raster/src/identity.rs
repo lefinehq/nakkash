@@ -61,10 +61,7 @@ impl Hasher {
     /// A hasher for a part of kind `tag`, so parts of different kinds that
     /// hold the same numbers have different identities.
     pub(crate) fn new(tag: &str) -> Hasher {
-        let mut hasher = Hasher(SipHasher13::new_with_keys(
-            0x6e61_6b6b_6173_6800,
-            0x6964_656e_7469_7479,
-        ));
+        let mut hasher = Hasher(nakkash_hash::keyed());
         hasher.text(tag);
         hasher
     }

@@ -93,7 +93,7 @@ pub use projected::{Filter, Landing};
 pub use radial::{
     Fade as RadialFade, RadialBlur, RadialKind, Rays, Ring, Rings, Stretch as RadialStretch,
 };
-pub use render::{Quality, RenderOptions, Simd, render, render_on, render_with};
+pub use render::{Quality, RenderOptions, Simd, render, render_on, render_with, simd_level};
 pub use sound::{Heard, level};
 pub use style::{
     CAPS, Cap, Color, Dashes, DrawStyle, FILL_RULES, FillRule, Gradient, GradientShape, JOINS,

@@ -1,7 +1,9 @@
 //! What the machine a render runs on holds and how it is doing ([D90]):
 //! how much memory a render may plan with, how hard the machine is pressed
 //! for it, and what the process used, so a render stays inside its budget,
-//! reacts before the system swaps and says what it cost.
+//! reacts before the system swaps and says what it cost. It also says how
+//! much room a file system has ([`free_space`]) and which system the
+//! process runs on ([`system`]), whose maths library a render calls.
 //!
 //! The figures come from the operating system: on Linux from `/proc` and
 //! the control group (cgroup) the process runs in, which is how a container
@@ -227,6 +229,33 @@ pub fn swap() -> Option<Swap> {
     #[cfg(target_os = "macos")]
     return macos::swap();
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    return None;
+}
+
+/// The system the process runs on, as far as it can change the bits of a
+/// render's maths, whose functions (`exp`, `sin`, `powf`, …) come from the
+/// system's own library: on macOS its product version and build (`macOS
+/// 26.3, build 25D125`); on Linux the version of the GNU C library (glibc)
+/// and the kernel's release (`glibc 2.39, Linux 6.8.0-49-generic`).
+/// `None` when the system does not say, or on any other system or C
+/// library: a caller must never take an unknown system for a known one.
+pub fn system() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    return linux::system();
+    #[cfg(target_os = "macos")]
+    return macos::system();
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    return None;
+}
+
+/// The bytes free to this process on the file system holding `path`, which
+/// must exist: what a writer that must never fill the disk checks first.
+/// `None` when the path does not exist, cannot be named to the system, or
+/// the system does not say.
+pub fn free_space(path: &std::path::Path) -> Option<u64> {
+    #[cfg(unix)]
+    return unix::free_space(path);
+    #[cfg(not(unix))]
     return None;
 }
 

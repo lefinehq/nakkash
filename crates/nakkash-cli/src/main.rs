@@ -2,8 +2,14 @@
 //! stdout; failures, logs and timings to stderr. It exits 0, 1 when a check
 //! has an error line, or a failure's [`Kind::exit_code`](nakkash_engine::Kind::exit_code).
 
+mod build_identity;
 mod commands;
 mod stats;
+
+/// The build script's checkout probe, tested with the binary's tests.
+#[cfg(test)]
+#[path = "../build/checkout.rs"]
+mod checkout;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -63,7 +69,9 @@ struct Cli {
     #[arg(long, value_name = "N", global = true)]
     mem_mib: Option<u64>,
     /// Print what the command cost to stderr at the end: time, peak
-    /// memory, the budget and how it was held, swap and bytes written.
+    /// memory, the budget and how it was held, swap, bytes written, and
+    /// the compared frames a diff, a fidelity run or `frames` drew and
+    /// reused from a record.
     #[arg(long, global = true)]
     stats: bool,
     #[command(subcommand)]
@@ -423,6 +431,46 @@ enum Command {
         /// Only this sample, by id; repeat for more.
         #[arg(long, value_name = "ID")]
         only: Vec<String>,
+        /// Record what each sample's frames drew into `DIR/<id>/`, so a
+        /// later run can reuse them (D94); needs `--record-cap`.
+        #[arg(long, value_name = "DIR", requires = "record_cap")]
+        record: Option<PathBuf>,
+        /// The most this run writes into the records, in GiB, such as `8`:
+        /// refused before anything is written when the file system holding
+        /// them has less free. The sample whose write would pass it and
+        /// every sample after it are not measured, and the run exits 1;
+        /// the records of the samples before it are kept. Records already
+        /// in `DIR` that this run does not write again, such as those of
+        /// samples left out by `--only`, are not counted.
+        #[arg(long, value_name = "GIB", requires = "record")]
+        record_cap: Option<commands::fidelity::RecordCap>,
+        /// A runner's list of the recorded frames it vouches for
+        /// (`nakkash.FidelityReuse.1`): each is read from its record in
+        /// place of drawing it, where it still draws what was recorded.
+        #[arg(long, value_name = "FILE")]
+        reuse: Option<PathBuf>,
+    },
+    /// Draw frames of a sample recorded by `fidelity --record` again, from
+    /// its folder alone, and print one JSON line a frame, in index order:
+    /// the content hashes of our pixels, the coverage and the shown mask,
+    /// as its record names them, and each draw's time in milliseconds.
+    /// Frames are drawn as the fidelity run drew them: on the CPU, at
+    /// precise quality.
+    Frames {
+        /// The sample's record folder, `DIR/<id>`, with its `scene.json`
+        /// and `sample.json`.
+        sample: PathBuf,
+        /// The frames to draw, by index among the sample's compared frames,
+        /// such as `0,3,7`.
+        #[arg(long, value_name = "LIST", value_delimiter = ',', required = true)]
+        frames: Vec<usize>,
+        /// Refused unless `precise`: a recorded frame was drawn at precise
+        /// quality.
+        #[arg(long, value_enum, default_value = "precise")]
+        quality: QualityArg,
+        /// Refused: a recorded frame was drawn on the CPU.
+        #[arg(long)]
+        gpu: bool,
     },
     /// Import an `.aep` project or a `.mogrt` template as a scene, and print
     /// what the import mapped, defaulted, ignored or could not support yet.
@@ -529,6 +577,7 @@ impl Command {
             | Command::Export { scene, .. }
             | Command::Vary { scene, .. } => scene,
             Command::Migrate { instance, .. } => instance,
+            Command::Frames { sample, .. } => sample,
             Command::Brief { scene, .. } => scene,
             Command::Import { project, .. } | Command::Inspect { project, .. } => project,
             Command::Fidelity { manifest, .. } | Command::Batch { manifest, .. } => manifest,
@@ -707,6 +756,9 @@ fn main() -> ExitCode {
             work,
             images,
             only,
+            record,
+            record_cap,
+            reuse,
         } => commands::fidelity::run(&commands::fidelity::Args {
             manifest: &manifest,
             ledger: ledger.as_deref(),
@@ -714,7 +766,22 @@ fn main() -> ExitCode {
             work: &work,
             images,
             only: &only,
+            record: record.as_deref().zip(record_cap),
+            reuse: reuse.as_deref(),
         }),
+        Command::Frames {
+            sample,
+            frames,
+            quality,
+            gpu,
+        } => commands::frames::run(
+            &sample,
+            &commands::frames::Args {
+                frames: &frames,
+                quality: quality.into(),
+                gpu,
+            },
+        ),
         Command::Import {
             project,
             out,

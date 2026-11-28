@@ -94,9 +94,20 @@ impl Session {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         let text = stage("read", || {
-            let text = fs::read_to_string(&path).map_err(|e| Diagnostic::io("read", &path, &e))?;
-            crate::includes::flattened(&path, text)
+            fs::read_to_string(&path).map_err(|e| Diagnostic::io("read", &path, &e))
         })?;
+        Session::open_text(path, text)
+    }
+
+    /// A session on `text`, as read from the scene file at `path`: what
+    /// [`Session::open`] makes of the file, for a caller that has read and
+    /// checked its bytes first, so the scene it checked is the one opened.
+    ///
+    /// # Errors
+    /// As [`Session::open`], but for reading the file.
+    pub fn open_text(path: impl Into<PathBuf>, text: String) -> Result<Self> {
+        let path = path.into();
+        let text = stage("read", || crate::includes::flattened(&path, text))?;
         if text.contains("\"nakkash.Instance.")
             && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
             && crate::instance::is_instance(&json)

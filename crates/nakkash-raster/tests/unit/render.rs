@@ -978,3 +978,18 @@ fn an_effect_reading_its_whole_box_reads_the_part_off_the_canvas() {
         assert!(near(a, b), "({x}, {y}): {a:?} against {b:?}");
     }
 }
+
+/// The SIMD level is the one `Simd::Native` draws with, named the same on
+/// every run.
+#[test]
+fn the_simd_level_is_named_for_this_processor() {
+    let level = simd_level();
+    #[cfg(target_arch = "aarch64")]
+    assert_eq!(level, "neon");
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    assert!(
+        ["sse2", "sse4.2", "avx2", "avx512"].contains(&level),
+        "{level}"
+    );
+    assert_eq!(level, simd_level());
+}
