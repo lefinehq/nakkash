@@ -31,8 +31,8 @@ use nakkash_raster::Image;
 use winnow::ascii::digit1;
 use winnow::combinator::{alt, opt};
 
-use super::files::{TMP, write_whole};
-use super::{Drawn, FrameRecord, Hex128};
+use super::files::{TMP, write_taken};
+use super::{Drawn, FrameRecord, Hex128, Quota};
 
 /// The tag of [`pixels_hash`].
 const PIXELS: &str = "nakkash.record.pixels";
@@ -158,12 +158,15 @@ fn sized(tag: &str, width: u32, height: u32, bytes: &[u8]) -> u128 {
 }
 
 /// Writes frame `index` of `drawn` into `dir`: `f0000.ours.lz4`,
-/// `f0000.cov` and, when there is a shown mask, `f0000.shown`, each whole.
+/// `f0000.cov` and, when there is a shown mask, `f0000.shown`, each whole,
+/// once `quota` has room for all of them, so a frame is written whole or
+/// not at all.
 ///
 /// # Errors
 /// An invalid diagnostic when a mask does not have a value for each pixel
-/// of our frame, or an I/O one when a file cannot be written.
-pub fn write_frame(dir: &Path, index: usize, drawn: &Drawn) -> Result<()> {
+/// of our frame, or an I/O one when `quota` has no room for the frame or a
+/// file cannot be written.
+pub fn write_frame(dir: &Path, index: usize, drawn: &Drawn, quota: &Quota) -> Result<()> {
     let (width, height) = (drawn.ours.width(), drawn.ours.height());
     let masks = [
         ("coverage", COVERAGE, Some(&drawn.coverage)),
@@ -195,7 +198,7 @@ pub fn write_frame(dir: &Path, index: usize, drawn: &Drawn) -> Result<()> {
         payload: content_hash(PAYLOAD, &compressed),
         hash: pixels_hash(&drawn.ours).0,
     };
-    write_file(&path, header, &compressed)?;
+    let mut files = vec![(path.clone(), file_bytes(header, &compressed, &path)?)];
     for (_, ending, mask) in masks {
         if let Some(mask) = mask {
             let bits = pack(mask);
@@ -206,10 +209,16 @@ pub fn write_frame(dir: &Path, index: usize, drawn: &Drawn) -> Result<()> {
                 payload: content_hash(PAYLOAD, &bits),
                 hash: sized(MASK, width, height, &bits),
             };
-            write_file(&file(dir, index, ending), header, &bits)?;
+            let path = file(dir, index, ending);
+            let bytes = file_bytes(header, &bits, &path)?;
+            files.push((path, bytes));
         }
     }
-    Ok(())
+    let total = files.iter().map(|(_, bytes)| bytes.len() as u64).sum();
+    quota.take(&path, total)?;
+    files
+        .iter()
+        .try_for_each(|(path, bytes)| write_taken(path, bytes))
 }
 
 /// Reads the frame `record` names from `dir`, a `width` by `height` frame,
@@ -279,12 +288,19 @@ pub(super) fn is_frame_file(name: &str) -> bool {
     parse_whole(name, grammar, "frame file", "`f0000.cov`").is_ok()
 }
 
-/// Writes `header` then `payload` to the file at `path`, whole.
-fn write_file(path: &Path, header: Header, payload: &[u8]) -> Result<()> {
-    write_whole(path, |out| {
-        header.write(out).map_err(std::io::Error::other)?;
-        out.write_all(payload)
-    })
+/// `header` then `payload`: the bytes of the pixel file at `path`.
+///
+/// # Errors
+/// An I/O diagnostic when the header cannot be written, which a header of
+/// fixed fields always can.
+fn file_bytes(header: Header, payload: &[u8], path: &Path) -> Result<Vec<u8>> {
+    let mut bytes = Cursor::new(Vec::with_capacity(HEADER + payload.len()));
+    header
+        .write(&mut bytes)
+        .map_err(|e| Diagnostic::io("encode", path, &std::io::Error::other(e)))?;
+    let mut bytes = bytes.into_inner();
+    bytes.extend_from_slice(payload);
+    Ok(bytes)
 }
 
 /// Reads the file at `path` and decodes it with `decode`.

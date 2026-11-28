@@ -1,0 +1,5 @@
+---
+source: crates/nakkash-cli/tests/frames.rs
+expression: stderr(&out)
+---
+error: a recorded frame is drawn as its fidelity run drew it, on the CPU at precise quality, and `--gpu` draws it otherwise; expected `nakkash frames` without `--gpu`, at `--quality precise`

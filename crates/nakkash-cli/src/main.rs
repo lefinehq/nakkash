@@ -2,12 +2,6 @@
 //! stdout; failures, logs and timings to stderr. It exits 0, 1 when a check
 //! has an error line, or a failure's [`Kind::exit_code`](nakkash_engine::Kind::exit_code).
 
-// `fidelity --record` will hand the build to the session; until then only
-// the tests read it.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read once `fidelity --record` hands it on")
-)]
 mod build_identity;
 mod commands;
 mod stats;
@@ -435,6 +429,43 @@ enum Command {
         /// Only this sample, by id; repeat for more.
         #[arg(long, value_name = "ID")]
         only: Vec<String>,
+        /// Record what each sample's frames drew into `DIR/<id>/`, so a
+        /// later run can reuse them (D94); needs `--record-cap`.
+        #[arg(long, value_name = "DIR", requires = "record_cap")]
+        record: Option<PathBuf>,
+        /// The most the records may take, in GiB, such as `8`: refused
+        /// before anything is written when the file system holding the
+        /// records has less free, and the run records nothing more once
+        /// its records would pass it.
+        #[arg(long, value_name = "GIB", requires = "record")]
+        record_cap: Option<commands::fidelity::RecordCap>,
+        /// A runner's list of the recorded frames it vouches for
+        /// (`nakkash.FidelityReuse.1`): each is read from its record in
+        /// place of drawing it, where it still draws what was recorded.
+        #[arg(long, value_name = "FILE")]
+        reuse: Option<PathBuf>,
+    },
+    /// Draw frames of a sample recorded by `fidelity --record` again, from
+    /// its folder alone, and print one JSON line a frame, in index order:
+    /// the content hashes of our pixels, the coverage and the shown mask,
+    /// as its record names them, and each draw's time in milliseconds.
+    /// Frames are drawn as the fidelity run drew them: on the CPU, at
+    /// precise quality.
+    Frames {
+        /// The sample's record folder, `DIR/<id>`, with its `scene.json`
+        /// and `sample.json`.
+        sample: PathBuf,
+        /// The frames to draw, by index among the sample's compared frames,
+        /// such as `0,3,7`.
+        #[arg(long, value_name = "LIST", value_delimiter = ',', required = true)]
+        frames: Vec<usize>,
+        /// Refused unless `precise`: a recorded frame was drawn at precise
+        /// quality.
+        #[arg(long, value_enum, default_value = "precise")]
+        quality: QualityArg,
+        /// Refused: a recorded frame was drawn on the CPU.
+        #[arg(long)]
+        gpu: bool,
     },
     /// Import an `.aep` project or a `.mogrt` template as a scene, and print
     /// what the import mapped, defaulted, ignored or could not support yet.
@@ -541,6 +572,7 @@ impl Command {
             | Command::Export { scene, .. }
             | Command::Vary { scene, .. } => scene,
             Command::Migrate { instance, .. } => instance,
+            Command::Frames { sample, .. } => sample,
             Command::Brief { scene, .. } => scene,
             Command::Import { project, .. } | Command::Inspect { project, .. } => project,
             Command::Fidelity { manifest, .. } | Command::Batch { manifest, .. } => manifest,
@@ -719,6 +751,9 @@ fn main() -> ExitCode {
             work,
             images,
             only,
+            record,
+            record_cap,
+            reuse,
         } => commands::fidelity::run(&commands::fidelity::Args {
             manifest: &manifest,
             ledger: ledger.as_deref(),
@@ -726,7 +761,22 @@ fn main() -> ExitCode {
             work: &work,
             images,
             only: &only,
+            record: record.as_deref().zip(record_cap),
+            reuse: reuse.as_deref(),
         }),
+        Command::Frames {
+            sample,
+            frames,
+            quality,
+            gpu,
+        } => commands::frames::run(
+            &sample,
+            &commands::frames::Args {
+                frames: &frames,
+                quality: quality.into(),
+                gpu,
+            },
+        ),
         Command::Import {
             project,
             out,

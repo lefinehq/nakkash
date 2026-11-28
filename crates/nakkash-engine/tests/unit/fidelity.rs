@@ -11,8 +11,10 @@ use super::*;
 use crate::diff::tests::renders;
 use rstest::rstest;
 
+use crate::record::tests::room;
 use crate::record::{
-    Build, Hex128, Platform, RECORD, Reuse, ReuseSchema, SampleReuse, read_sample,
+    Build, Hex128, Platform, Quota, RECORD, REPLAY, Replay, Reuse, ReuseSchema, SCENE, SampleReuse,
+    read_sample,
 };
 
 /// A fixture project with one star, which the import does not support.
@@ -731,8 +733,13 @@ fn star_sample(dir: &Path) -> Sample {
     }
 }
 
-/// Options recording into `dir` with an identified build.
+/// Options recording into `dir` with an identified build and room enough.
 fn recording(dir: &Path) -> MeasureOptions {
+    capped(dir, Arc::new(room()))
+}
+
+/// Options recording into `dir` with an identified build, within `quota`.
+fn capped(dir: &Path, quota: Arc<Quota>) -> MeasureOptions {
     MeasureOptions {
         record: Some(Recording {
             dir: dir.to_path_buf(),
@@ -741,6 +748,7 @@ fn recording(dir: &Path) -> MeasureOptions {
                 tree: None,
                 profile: "test".to_owned(),
             },
+            quota,
         }),
         ..MeasureOptions::default()
     }
@@ -799,6 +807,64 @@ fn a_recorded_sample_reused_draws_nothing_and_writes_the_same_ledger() {
     assert_eq!(ledger(reused), ledger(full.clone()));
     // A run without a record or a list measures the same.
     assert_eq!(measured(&sample, &work, &with_images(false)).0, full);
+}
+
+/// A recorded sample keeps what `nakkash frames` draws it again from: the
+/// measured scene, as the run wrote it, and its frames' times and canvas.
+#[test]
+fn a_recorded_sample_keeps_its_scene_and_its_frames() {
+    let dir = scratch("replay");
+    let work = dir.join("work");
+    let records = dir.join("records");
+    let sample = Sample {
+        ignore: vec!["shape-layer-1".parse().unwrap()],
+        ..star_sample(&dir)
+    };
+    measured(&sample, &work, &recording(&records));
+    let folder = records.join("star");
+    assert_eq!(
+        fs::read(folder.join(SCENE)).unwrap(),
+        fs::read(work.join("star/scene.json")).unwrap()
+    );
+    let replay = Replay::read(&folder).unwrap();
+    let record = read_sample(&folder).unwrap();
+    let times: Vec<u64> = record.frames.iter().map(|f| f.time.to_bits()).collect();
+    assert_eq!(
+        replay.times.iter().map(|t| t.to_bits()).collect::<Vec<_>>(),
+        times
+    );
+    assert_eq!(replay.ignore, sample.ignore);
+    assert_eq!((replay.width, replay.height), (400, 400));
+    assert!(folder.join(REPLAY).is_file());
+}
+
+/// A run whose records reach their cap stops recording: the sample that
+/// reached it fails and leaves no record, and every sample after it is
+/// refused before its recording begins, so the record it had is kept.
+#[test]
+fn a_run_stops_recording_at_its_cap() {
+    let dir = scratch("cap");
+    let work = dir.join("work");
+    let kept = dir.join("kept");
+    let sample = star_sample(&dir);
+    measured(&sample, &work, &recording(&kept));
+    let quota = Arc::new(Quota::within(&dir, 1000).unwrap());
+    let reached = dir.join("reached");
+    let error = super::measure(&sample, &work, &capped(&reached, quota.clone())).unwrap_err();
+    assert_eq!(error.kind, Kind::Io, "{error}");
+    assert!(error.message.starts_with("sample `star`: "), "{error}");
+    assert!(!reached.join("star").join(RECORD).exists());
+    let mut refused = None;
+    let n = renders(|| {
+        refused = Some(super::measure(&sample, &work, &capped(&kept, quota)).unwrap_err());
+    });
+    let refused = refused.unwrap();
+    assert_eq!(refused.kind, Kind::Io, "{refused}");
+    assert_eq!(n, 0, "refused before any draw");
+    assert!(
+        read_sample(&kept.join("star")).is_ok(),
+        "the record is kept"
+    );
 }
 
 /// A changed manifest entry is a changed sample: its record is not reused

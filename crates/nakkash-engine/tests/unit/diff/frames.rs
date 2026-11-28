@@ -11,9 +11,11 @@ use pretty_assertions::assert_eq;
 use rstest::rstest;
 
 use crate::diff::tests::{SCENE, options, references, renders, scratch, session};
+use crate::record::tests::room;
 use crate::record::{
-    Build, FrameRecord, Hex128, Identities, Platform, RECORD, Reusing, SampleRecord, SampleReuse,
-    Schema, begin_recording, read_frame, read_sample, write_sample,
+    Build, FrameRecord, Hex128, Identities, Platform, RECORD, Replay, Reusing, SampleRecord,
+    SampleReuse, Schema, Target, begin_recording, mask_hash, pixels_hash, read_frame, read_sample,
+    write_sample,
 };
 use crate::{Diff, DiffOptions, Session};
 use nakkash_format::Kind;
@@ -33,6 +35,14 @@ fn build() -> Build {
     }
 }
 
+/// Where a recording into `dir` writes, with room enough.
+fn target(dir: &Path) -> Target {
+    Target {
+        dir: dir.to_path_buf(),
+        quota: Arc::new(room()),
+    }
+}
+
 /// `opts` ignoring the layers `ignore`.
 fn ignoring(opts: DiffOptions, ignore: &[&str]) -> DiffOptions {
     DiffOptions {
@@ -48,7 +58,7 @@ fn record(scene: &Session, opts: &DiffOptions, dir: &Path) -> (Diff, Vec<FrameRe
     begin_recording(dir, opts.reuse.as_deref().map(Reusing::dir)).unwrap();
     let recorded = scene
         .diff_recorded(&DiffOptions {
-            record: Some(dir.to_path_buf()),
+            record: Some(target(dir)),
             ..opts.clone()
         })
         .unwrap();
@@ -61,7 +71,7 @@ fn record(scene: &Session, opts: &DiffOptions, dir: &Path) -> (Diff, Vec<FrameRe
         entry: Hex128(0),
         frames: frames.clone(),
     };
-    write_sample(dir, &sample).unwrap();
+    write_sample(dir, &sample, &room()).unwrap();
     (recorded.diff, frames)
 }
 
@@ -84,7 +94,7 @@ fn every_frame(dir: &Path) -> SampleReuse {
 fn rewrite(dir: &Path, reuse: &mut SampleReuse, change: impl FnOnce(&mut SampleRecord)) {
     let mut sample = read_sample(dir).unwrap();
     change(&mut sample);
-    write_sample(dir, &sample).unwrap();
+    write_sample(dir, &sample, &room()).unwrap();
     reuse.record = every_frame(dir).record;
 }
 
@@ -318,7 +328,7 @@ fn a_run_never_records_into_the_folder_it_reuses() {
     let dir = scratch("same");
     record(&scene, &opts, &dir);
     let into_itself = DiffOptions {
-        record: Some(dir.clone()),
+        record: Some(target(&dir)),
         ..reusing(&opts, &every_frame(&dir))
     };
     let error = scene.diff_recorded(&into_itself).unwrap_err();
@@ -337,7 +347,7 @@ fn a_recording_that_has_not_begun_is_refused() {
     let dir = scratch("unbegun");
     record(&scene, &opts, &dir);
     let again = DiffOptions {
-        record: Some(dir.clone()),
+        record: Some(target(&dir)),
         ..opts
     };
     let mut error = None;
@@ -356,7 +366,7 @@ fn a_recording_into_a_missing_folder_is_refused_before_any_draw() {
     let frames = references("missing-ref", &scene, &[0.0, 5.0]);
     let dir = scratch("missing").join("never-made");
     let opts = DiffOptions {
-        record: Some(dir.clone()),
+        record: Some(target(&dir)),
         ..options(frames, 2.0)
     };
     let mut error = None;
@@ -415,4 +425,67 @@ fn each_frame_takes_its_own_input_and_answers_in_order() {
         scene.each_frame(Vec::new(), &each).unwrap(),
         Vec::<String>::new()
     );
+}
+
+/// `nakkash frames` draws a frame as the diff drew it, through the same
+/// draws: each frame drawn again hashes to what its record names, with or
+/// without an ignored layer, and draws once each of its lists.
+#[rstest]
+#[case::plain(&[])]
+#[case::with_an_ignored_layer(&["bar"])]
+fn a_frame_drawn_again_hashes_as_recorded(#[case] ignore: &[&str]) {
+    let scene = session(SCENE);
+    // A folder per case: `cargo test` runs the cases as threads of one process.
+    let name = format!("again-{}", ignore.join("-"));
+    let frames = references(&format!("{name}-ref"), &scene, &[0.0, 5.0, 10.0]);
+    let opts = ignoring(options(frames, 10.0), ignore);
+    let dir = scratch(&name);
+    let (_, records) = record(&scene, &opts, &dir);
+    let replay = opts.replay(&scene).unwrap();
+    let replayer = scene.replayer(&replay).unwrap();
+    for frame in &records {
+        let (drawn, ms) = replayer.draw_frame(frame.index).unwrap();
+        let (width, height) = (drawn.ours.width(), drawn.ours.height());
+        assert_eq!(pixels_hash(&drawn.ours), frame.ours_pixels);
+        assert_eq!(mask_hash(&drawn.coverage, width, height), frame.coverage);
+        let shown = drawn.shown.as_ref().map(|m| mask_hash(m, width, height));
+        assert_eq!(shown, frame.shown_mask);
+        assert!(ms.draw > 0.0 && ms.coverage > 0.0, "{ms:?}");
+        if ignore.is_empty() {
+            assert_eq!(ms.shown, 0.0);
+        }
+    }
+    let before = crate::frame_counts();
+    let n = renders(|| {
+        replayer.draw_frame(2).unwrap();
+    });
+    assert_eq!(n, 2 + usize::from(!ignore.is_empty()));
+    assert!(crate::frame_counts().drawn > before.drawn);
+    let past = replayer.draw_frame(3).unwrap_err();
+    assert_eq!(past.kind, Kind::OutOfRange, "{past}");
+}
+
+/// A replay is drawn only on the canvas it was recorded on, and only with
+/// layers the scene has.
+#[test]
+fn a_replay_of_another_canvas_or_layer_is_refused() {
+    let scene = session(SCENE);
+    let frames = references("replay-other-ref", &scene, &[0.0]);
+    let replay = options(frames, 10.0).replay(&scene).unwrap();
+    assert_eq!((replay.width, replay.height), (40, 20));
+    let wider = Replay {
+        width: 41,
+        ..replay.clone()
+    };
+    let error = scene.replayer(&wider).err().unwrap();
+    assert_eq!(error.kind, Kind::Invalid, "{error}");
+    assert_eq!(
+        error.to_string(),
+        "the sample was recorded on a 41x20 canvas, and its scene is 40x20; expected the scene the sample was recorded from"
+    );
+    let missing = Replay {
+        ignore: vec!["nothing".parse().unwrap()],
+        ..replay
+    };
+    assert!(scene.replayer(&missing).is_err());
 }

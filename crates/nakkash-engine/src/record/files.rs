@@ -1,32 +1,39 @@
 //! Writing a record's files whole: each to a temporary file beside it,
 //! flushed to disk and renamed into place, so a reader finds the file as it
-//! was before or as it is now, never in between.
+//! was before or as it is now, never in between; and each within the run's
+//! [`Quota`], taken before the file is written.
 
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use nakkash_format::{Diagnostic, Result};
 
-/// Writes the file at `path` with what `write` writes: to `path` with
-/// `.tmp` added, flushed to disk, then renamed. A write that fails removes
-/// what it wrote and leaves any file before it as it was.
+use super::Quota;
+
+/// Writes `bytes` as the file at `path`, once `quota` has room for them:
+/// to `path` with `.tmp` added, flushed to disk, then renamed. A write that
+/// fails removes what it wrote and leaves any file before it as it was.
+///
+/// # Errors
+/// An I/O diagnostic when `quota` has no room for them, or the file cannot
+/// be written or renamed.
+pub(super) fn write_whole(path: &Path, bytes: &[u8], quota: &Quota) -> Result<()> {
+    quota.take(path, bytes.len() as u64)?;
+    write_taken(path, bytes)
+}
+
+/// Writes `bytes` as the file at `path`, whole, their room already taken.
 ///
 /// # Errors
 /// An I/O diagnostic when the file cannot be written or renamed.
-pub(super) fn write_whole(
-    path: &Path,
-    write: impl FnOnce(&mut BufWriter<File>) -> io::Result<()>,
-) -> Result<()> {
+pub(super) fn write_taken(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = temporary(path);
     let attempt = || {
-        let mut out = BufWriter::new(File::create(&tmp)?);
-        write(&mut out)?;
-        out.flush()?;
-        out.into_inner()
-            .map_err(io::IntoInnerError::into_error)?
-            .sync_all()
+        let mut file = File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()
     };
     attempt()
         .map_err(|e| Diagnostic::io("write", &tmp, &e))

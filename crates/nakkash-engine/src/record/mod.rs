@@ -17,6 +17,12 @@
 //!   only against the record that names it ([`read_frame`]): a file that
 //!   does not hold what the record names is refused, never used.
 //!
+//! - `scene.json` and `sample.json`, what draws the sample's frames again
+//!   from its folder alone ([`Replay`]).
+//!
+//! Every file a recording writes takes its bytes from the run's [`Quota`]
+//! first, so a recording stops at its cap rather than fill the disk.
+//!
 //! Every hash is the one content hash of the rasteriser's identities
 //! (`nakkash_hash`), and covers the frame's size.
 //!
@@ -28,16 +34,32 @@
 
 mod files;
 mod pixels;
+mod quota;
+mod replay;
 mod reuse;
 mod sample;
 mod types;
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
 pub use pixels::{mask_hash, pixels_hash, read_frame, read_masks, read_ours, write_frame};
+pub use quota::Quota;
+pub use replay::{REPLAY, Replay, SCENE, write_scene};
 pub use reuse::{
     Identities, Reuse, ReuseSchema, Reusing, SampleReuse, begin_recording, check_recording,
 };
 pub use sample::{RECORD, begin_sample, read_pinned, read_sample, write_sample};
 pub use types::{Build, Drawn, FrameRecord, Hex128, Platform, SampleRecord, Schema, Times};
+
+/// Where a diff records its frames, and the room it may take.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Target {
+    /// The sample's record folder.
+    pub dir: PathBuf,
+    /// The run's quota, which every file written takes its bytes from.
+    pub quota: Arc<Quota>,
+}
 
 #[cfg(test)]
 #[path = "../../tests/unit/record/mod.rs"]

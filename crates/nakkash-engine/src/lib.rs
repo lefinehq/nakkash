@@ -43,7 +43,10 @@ pub mod vary;
 #[path = "../tests/unit/support.rs"]
 mod test_support;
 
-pub use diff::{Diff, DiffOptions, Error as DiffError, Floor, FrameDiff, Pooled, RecordedDiff};
+pub use diff::{
+    Diff, DiffOptions, Error as DiffError, Floor, FrameCounts, FrameDiff, Pooled, RecordedDiff,
+    Replayer, frame_counts,
+};
 pub use export::export_project;
 pub use fidelity::{
     Change, Floors, Ledger, Manifest, Measure, MeasureOptions, NOISE, Recording, Rule, Sample,

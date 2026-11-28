@@ -52,6 +52,8 @@ nakkash-hash = { path = "../nakkash-hash" }
 nakkash-hash = { path = "../nakkash-hash" }
 rstest.workspace = true
 pretty_assertions.workspace = true
+# Error text pinned in the `frames` tests.
+insta.workspace = true
 nakkash-format = { path = "../nakkash-format" }
 sha2.workspace = true
 

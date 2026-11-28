@@ -116,3 +116,17 @@ fn an_environment_cap_limits_the_default_threads() {
     assert_eq!(capped(12, None), 12);
     assert_eq!(capped(0, None), 1);
 }
+
+/// The free space of an existing folder's file system is known on every
+/// system the project runs on, and none for a path that does not exist or
+/// cannot be named to the system.
+#[test]
+fn free_space_is_known_for_an_existing_folder_only() {
+    let here = std::env::temp_dir();
+    let free = free_space(&here);
+    #[cfg(unix)]
+    assert!(free.is_some_and(|bytes| bytes > 0), "{free:?}");
+    let _ = free;
+    assert_eq!(free_space(&here.join("nakkash-no-such-folder/below")), None);
+    assert_eq!(free_space(std::path::Path::new("a\0b")), None);
+}

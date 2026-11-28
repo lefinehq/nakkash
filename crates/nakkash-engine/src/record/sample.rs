@@ -3,15 +3,16 @@
 //! one recording that wrote them both.
 
 use std::fs;
-use std::io::{self, Write};
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use nakkash_format::{Diagnostic, Kind, Place, Result};
 use nakkash_hash::content_hash;
 
 use super::files::{sync_dir, temporary, write_whole};
 use super::pixels::is_frame_file;
-use super::{Hex128, SampleRecord};
+use super::replay::{REPLAY, SCENE};
+use super::{Hex128, Quota, SampleRecord};
 
 /// The name of a sample's record file in its folder.
 pub const RECORD: &str = "record.json";
@@ -22,8 +23,9 @@ const EXPECTED: &str = r#"a record written by this build: {"schema":"nakkash.Fid
 /// Begins a recording into `dir`, which it makes if needed: removes the
 /// folder's record, for good, before any frame of the new recording is
 /// written, so a recording that stops part way leaves no record beside
-/// frames it does not name; then the frame files of the recordings before
-/// it, so none outlives them, and the record's own files written part way
+/// frames it does not name; then the frame files and the replay
+/// (`sample.json`, `scene.json`) of the recordings before it, so none
+/// outlives them, and the record's own files written part way
 /// (`record.json.tmp`, `f0000.cov.tmp`). Folders, and files of other names,
 /// are left as they are: the folder may hold what other tools wrote.
 ///
@@ -34,13 +36,18 @@ pub fn begin_sample(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir).map_err(|e| Diagnostic::io("create", dir, &e))?;
     remove(&dir.join(RECORD))?;
     sync_dir(dir)?;
-    let half_written = temporary(Path::new(RECORD));
+    let named: Vec<PathBuf> = [RECORD, REPLAY, SCENE]
+        .into_iter()
+        .flat_map(|name| [PathBuf::from(name), temporary(Path::new(name))])
+        .filter(|name| name != Path::new(RECORD))
+        .collect();
     let entries = fs::read_dir(dir).map_err(|e| Diagnostic::io("read", dir, &e))?;
     for entry in entries {
         let entry = entry.map_err(|e| Diagnostic::io("read", dir, &e))?;
         let path = entry.path();
         let name = entry.file_name();
-        let ours = Path::new(&name) == half_written || name.to_str().is_some_and(is_frame_file);
+        let ours = named.iter().any(|ours| ours.as_os_str() == name)
+            || name.to_str().is_some_and(is_frame_file);
         if ours && path.is_file() {
             remove(&path)?;
         }
@@ -56,17 +63,22 @@ fn remove(path: &Path) -> Result<()> {
     }
 }
 
-/// Writes `record` as `record.json` in `dir`, whole: to `record.json.tmp`,
-/// flushed to disk, then renamed, and the folder flushed after it. A write
-/// that fails leaves any record before it as it was.
+/// Writes `record` as `record.json` in `dir`, whole, once `quota` has room
+/// for it: to `record.json.tmp`, flushed to disk, then renamed, and the
+/// folder flushed after it. A write that fails leaves any record before it
+/// as it was.
 ///
 /// # Errors
-/// An I/O diagnostic when the file cannot be written.
-pub fn write_sample(dir: &Path, record: &SampleRecord) -> Result<()> {
-    write_whole(&dir.join(RECORD), |out| {
-        serde_json::to_writer_pretty(&mut *out, record)?;
-        out.write_all(b"\n")
+/// An I/O diagnostic when `quota` has no room for it or the file cannot be
+/// written.
+pub fn write_sample(dir: &Path, record: &SampleRecord, quota: &Quota) -> Result<()> {
+    let path = dir.join(RECORD);
+    let mut bytes = serde_json::to_vec_pretty(record).map_err(|e| {
+        Diagnostic::new(Kind::Invalid, format!("cannot write the record: {e}"))
+            .at(Place::Other(path.display().to_string()))
     })?;
+    bytes.push(b'\n');
+    write_whole(&path, &bytes, quota)?;
     sync_dir(dir)
 }
 

@@ -230,6 +230,17 @@ pub fn swap() -> Option<Swap> {
     return None;
 }
 
+/// The bytes free to this process on the file system holding `path`, which
+/// must exist: what a writer that must never fill the disk checks first.
+/// `None` when the path does not exist, cannot be named to the system, or
+/// the system does not say.
+pub fn free_space(path: &std::path::Path) -> Option<u64> {
+    #[cfg(unix)]
+    return unix::free_space(path);
+    #[cfg(not(unix))]
+    return None;
+}
+
 #[cfg(test)]
 #[path = "../tests/unit/lib.rs"]
 mod tests;

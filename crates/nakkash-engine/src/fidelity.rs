@@ -36,7 +36,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::diff::{Floor, FrameDiff, file_name};
 use crate::record::{
-    Build, Hex128, Platform, Reuse, Reusing, SampleRecord, Schema, begin_recording, write_sample,
+    Build, Hex128, Platform, Quota, Reuse, Reusing, SampleRecord, Schema, Target, begin_recording,
+    write_sample, write_scene,
 };
 use crate::{
     DiffOptions, Session, import_scene, measure_layouts, substitute_fonts, write_document,
@@ -266,6 +267,9 @@ pub struct Recording {
     pub dir: PathBuf,
     /// The build drawing them, as the binary names itself.
     pub build: Build,
+    /// The room the run's records may take, shared by its samples: once a
+    /// write would pass it, the run records nothing more.
+    pub quota: Arc<Quota>,
 }
 
 impl Manifest {
@@ -454,10 +458,13 @@ fn round(value: &mut serde_json::Value) {
 /// ([`substitute_fonts`]), and every use counts as unsupported, so the
 /// sample is measured without its gap being hidden.
 ///
-/// With [`MeasureOptions::record`], the sample is recorded into its folder:
-/// the folder's record is removed before anything else, the frames are
-/// written as they are drawn, and the record ([`SampleRecord`]) last, once
-/// the whole sample has measured, so a sample that fails leaves none. With
+/// With [`MeasureOptions::record`], the sample is recorded into its folder,
+/// within the run's quota: the folder's record is removed before anything
+/// else, the frames are written as they are drawn, then the measured scene
+/// and its [`Replay`](crate::record::Replay), and the record
+/// ([`SampleRecord`]) last, once the whole sample has measured, so a sample
+/// that fails leaves none. A run whose quota is spent records nothing more:
+/// each sample after it is refused before its recording begins. With
 /// [`MeasureOptions::reuse`] naming the sample, its record is opened
 /// ([`Reusing::open`]) and its frames stand in for draws where the runner
 /// vouches for them ([`Reusing::frame`]); a record made from another entry
@@ -481,6 +488,9 @@ pub fn measure(sample: &Sample, work: &Path, options: &MeasureOptions) -> Result
     let recording = match &options.record {
         Some(record) => {
             sample.check_id().map_err(under)?;
+            // A run whose records reached their cap begins no recording, so
+            // the sample keeps the record it had.
+            record.quota.check().map_err(under)?;
             let dir = record.dir.join(&sample.id);
             begin_recording(&dir, listed.map(|listed| listed.dir.as_path())).map_err(under)?;
             Some((dir, record))
@@ -522,8 +532,8 @@ pub fn measure(sample: &Sample, work: &Path, options: &MeasureOptions) -> Result
         scene.insert("bg".into(), serde_json::json!(bg));
     }
     let scene = dir.join("scene.json");
-    fs::write(&scene, write_document(&import.json))
-        .map_err(|e| under(Diagnostic::io("write", &scene, &e)))?;
+    let text = write_document(&import.json);
+    fs::write(&scene, &text).map_err(|e| under(Diagnostic::io("write", &scene, &e)))?;
     let session = Session::open(&scene).map_err(under)?;
     let geometry = session.text_geometry(&import.texts).map_err(under)?;
     let frames = DiffOptions::frames_in(&sample.reference).map_err(under)?;
@@ -535,18 +545,20 @@ pub fn measure(sample: &Sample, work: &Path, options: &MeasureOptions) -> Result
         ),
         None => None,
     };
-    let recorded = session
-        .diff_recorded(&DiffOptions {
-            frames,
-            fps: sample.fps,
-            start: sample.start,
-            tolerance: DiffOptions::TOLERANCE,
-            images: options.images.then(|| dir.join("errors")),
-            ignore: sample.ignore.clone(),
-            record: recording.as_ref().map(|(dir, _)| dir.clone()),
-            reuse: reusing,
-        })
-        .map_err(under)?;
+    let diff_options = DiffOptions {
+        frames,
+        fps: sample.fps,
+        start: sample.start,
+        tolerance: DiffOptions::TOLERANCE,
+        images: options.images.then(|| dir.join("errors")),
+        ignore: sample.ignore.clone(),
+        record: (recording.as_ref()).map(|(dir, recording)| Target {
+            dir: dir.clone(),
+            quota: recording.quota.clone(),
+        }),
+        reuse: reusing,
+    };
+    let recorded = session.diff_recorded(&diff_options).map_err(under)?;
     let diff = recorded.diff;
     let mut unsupported = BTreeMap::new();
     for finding in &import.mapping.unsupported {
@@ -578,6 +590,12 @@ pub fn measure(sample: &Sample, work: &Path, options: &MeasureOptions) -> Result
     };
     if let (Some((dir, recording)), Some(frames), Some(entry)) = (recording, recorded.frames, entry)
     {
+        // What draws its frames again from the folder alone, then the
+        // record last, which names the recording whole.
+        let quota = &recording.quota;
+        write_scene(&dir, &text, quota).map_err(under)?;
+        let replay = diff_options.replay(&session).map_err(under)?;
+        replay.write(&dir, quota).map_err(under)?;
         let record = SampleRecord {
             schema: Schema::V1,
             sample: sample.id.clone(),
@@ -586,7 +604,7 @@ pub fn measure(sample: &Sample, work: &Path, options: &MeasureOptions) -> Result
             entry,
             frames,
         };
-        write_sample(&dir, &record).map_err(under)?;
+        write_sample(&dir, &record, quota).map_err(under)?;
     }
     Ok(measure)
 }

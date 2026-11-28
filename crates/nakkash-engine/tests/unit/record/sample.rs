@@ -9,8 +9,8 @@ use rstest::rstest;
 
 use super::*;
 use crate::diff::{Error, FrameDiff};
-use crate::record::tests::scratch;
-use crate::record::{Build, FrameRecord, Hex128, Platform, Schema, Times};
+use crate::record::tests::{room, scratch};
+use crate::record::{Build, FrameRecord, Hex128, Platform, Quota, Schema, Times};
 use nakkash_format::Kind;
 
 /// The error over `pixels` pixels, `mean` from 0 to 1.
@@ -85,7 +85,7 @@ fn a_sample_record_round_trips_and_refuses_unknown_fields(
     #[case] with_extra: &str,
 ) {
     let dir = scratch(&format!("record-{}", key.trim_matches('"')));
-    write_sample(&dir, &record()).unwrap();
+    write_sample(&dir, &record(), &room()).unwrap();
     let path = dir.join(RECORD);
     let json = fs::read_to_string(&path).unwrap();
     insta::assert_snapshot!("record", json);
@@ -118,7 +118,7 @@ fn a_sample_record_round_trips_and_refuses_unknown_fields(
 #[case::not_json("\"frames\"", "\"frames")]
 fn a_record_of_another_form_is_invalid(#[case] from: &str, #[case] to: &str) {
     let dir = scratch(&format!("form-{}", to.len()));
-    write_sample(&dir, &record()).unwrap();
+    write_sample(&dir, &record(), &room()).unwrap();
     let path = dir.join(RECORD);
     let json = fs::read_to_string(&path).unwrap();
     assert!(json.contains(from), "{json}");
@@ -141,7 +141,7 @@ fn a_record_whose_frames_disagree_is_invalid(
     let dir = scratch(&format!("disagree-{name}"));
     let mut sample = record();
     change(&mut sample.frames[1]);
-    write_sample(&dir, &sample).unwrap();
+    write_sample(&dir, &sample, &room()).unwrap();
     let error = read_sample(&dir).unwrap_err();
     assert_eq!(error.kind, Kind::Invalid);
     let place = error
@@ -165,7 +165,7 @@ fn a_record_whose_frames_disagree_is_invalid(
 #[case::psnr("\"psnr\"")]
 fn a_record_that_lacks_a_key_is_invalid(#[case] key: &str) {
     let dir = scratch(&format!("lacks-{}", key.trim_matches('"')));
-    write_sample(&dir, &record()).unwrap();
+    write_sample(&dir, &record(), &room()).unwrap();
     let path = dir.join(RECORD);
     let mut json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
@@ -191,7 +191,7 @@ fn a_record_that_lacks_a_key_is_invalid(#[case] key: &str) {
 #[test]
 fn beginning_a_recording_removes_the_record_and_stale_frames() {
     let dir = scratch("begin");
-    write_sample(&dir, &record()).unwrap();
+    write_sample(&dir, &record(), &room()).unwrap();
     let stale = [
         "f0000.cov",
         "f0001.ours.lz4",
@@ -200,16 +200,19 @@ fn beginning_a_recording_removes_the_record_and_stale_frames() {
         "f0000.cov.tmp",
         "f0001.ours.lz4.tmp",
         "record.json.tmp",
+        "scene.json",
+        "scene.json.tmp",
+        "sample.json",
+        "sample.json.tmp",
     ];
     let kept = [
-        "scene.json",
         "f0000.png",
         "f.cov",
         "fx001.cov",
         "f0000.ours",
         "g0000.cov",
         "notes.txt",
-        "scene.json.tmp",
+        "scene.json.bak",
         "other.tmp",
         "f0000.png.tmp",
         "f0000.cov.tmp.tmp",
@@ -245,7 +248,7 @@ fn a_record_that_cannot_be_removed_is_an_io_error() {
 #[test]
 fn a_record_is_written_only_whole() {
     let dir = scratch("whole");
-    write_sample(&dir, &record()).unwrap();
+    write_sample(&dir, &record(), &room()).unwrap();
     let names: Vec<String> = fs::read_dir(&dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -256,7 +259,10 @@ fn a_record_is_written_only_whole() {
     let mut other = record();
     other.sample = "m002".to_owned();
     fs::create_dir(dir.join(format!("{RECORD}.tmp"))).unwrap();
-    assert_eq!(write_sample(&dir, &other).unwrap_err().kind, Kind::Io);
+    assert_eq!(
+        write_sample(&dir, &other, &room()).unwrap_err().kind,
+        Kind::Io
+    );
     assert_eq!(read_sample(&dir).unwrap(), record());
 }
 
@@ -264,7 +270,10 @@ fn a_record_is_written_only_whole() {
 fn a_failed_write_leaves_no_record() {
     let dir = scratch("failed");
     fs::create_dir(dir.join(format!("{RECORD}.tmp"))).unwrap();
-    assert_eq!(write_sample(&dir, &record()).unwrap_err().kind, Kind::Io);
+    assert_eq!(
+        write_sample(&dir, &record(), &room()).unwrap_err().kind,
+        Kind::Io
+    );
     assert!(!dir.join(RECORD).exists());
     assert_eq!(read_sample(&dir).unwrap_err().kind, Kind::Io);
 }
@@ -296,13 +305,13 @@ proptest! {
 #[test]
 fn a_record_read_pinned_names_the_bytes_it_was_read_from() {
     let dir = scratch("pinned");
-    write_sample(&dir, &record()).unwrap();
+    write_sample(&dir, &record(), &room()).unwrap();
     let (read, pin) = read_pinned(&dir).unwrap();
     assert_eq!(read, record());
     assert_eq!(read_pinned(&dir).unwrap().1, pin);
     let mut other = record();
     other.build.profile = "debug".to_owned();
-    write_sample(&dir, &other).unwrap();
+    write_sample(&dir, &other, &room()).unwrap();
     assert_ne!(read_pinned(&dir).unwrap().1, pin);
     // The same record, spelled otherwise, is other bytes too.
     let path = dir.join(RECORD);
@@ -313,4 +322,20 @@ fn a_record_read_pinned_names_the_bytes_it_was_read_from() {
     let (read, after) = read_pinned(&dir).unwrap();
     assert_eq!(read, other);
     assert_ne!(after, before);
+}
+
+/// A record takes the bytes of its file from the quota, or is not written.
+#[test]
+fn a_record_is_written_within_its_quota() {
+    let dir = scratch("record-quota");
+    let quota = room();
+    write_sample(&dir, &record(), &quota).unwrap();
+    assert_eq!(quota.taken(), fs::metadata(dir.join(RECORD)).unwrap().len());
+    let small = Quota::within(&dir, 10).unwrap();
+    let other = scratch("record-quota-small");
+    assert_eq!(
+        write_sample(&other, &record(), &small).unwrap_err().kind,
+        Kind::Io
+    );
+    assert!(!other.join(RECORD).exists());
 }

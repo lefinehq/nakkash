@@ -30,11 +30,12 @@ use nakkash_raster::Image;
 use serde::{Deserialize, Serialize};
 
 use crate::Session;
-use crate::record::{FrameRecord, Reusing, check_recording};
+use crate::record::{FrameRecord, Replay, Reusing, Target, check_recording};
 
 mod frames;
 
 use frames::Origin;
+pub use frames::{FrameCounts, Replayer, frame_counts};
 
 /// What to compare with, and how.
 #[derive(Debug, Clone, PartialEq)]
@@ -52,13 +53,14 @@ pub struct DiffOptions {
     /// Layers left out of the drawing and the measure, by address: what the
     /// reference shows differently on purpose, such as a placeholder.
     pub ignore: Vec<Address>,
-    /// A folder to record each frame into, if any: its pixels and masks, as
-    /// files ([`write_frame`](crate::record::write_frame)), and its record,
+    /// A folder to record each frame into, if any, within its quota: its
+    /// pixels and masks, as files
+    /// ([`write_frame`](crate::record::write_frame)), and its record,
     /// returned by [`Session::diff_recorded`]. The caller begins the
     /// recording first ([`begin_recording`](crate::record::begin_recording)),
     /// so the folder holds no record, and writes the new one once it has
     /// measured the whole sample.
-    pub record: Option<PathBuf>,
+    pub record: Option<Target>,
     /// A sample's record whose frames may stand in for draws, if any: a
     /// frame is read from it in place of drawing it when the runner vouches
     /// for it and the runner, the record and this run agree on what it
@@ -84,6 +86,29 @@ impl DiffOptions {
     ///
     /// [D69]: https://github.com/lefinehq/nakkash/blob/main/docs/design/decisions.md#d69-a-reference-frame-passes-over-its-codec-floor
     pub const ERROR_MARGIN: f64 = 0.004;
+
+    /// The scene time of each reference frame, in seconds: frame `i` at
+    /// `start + i / fps`.
+    pub fn times(&self) -> Vec<f64> {
+        (0..self.frames.len())
+            .map(|i| self.start + i as f64 / self.fps)
+            .collect()
+    }
+
+    /// How `session` draws the frames these options compare: each frame's
+    /// time, the ignored layers and the canvas.
+    ///
+    /// # Errors
+    /// As [`Session::graph`].
+    pub fn replay(&self, session: &Session) -> Result<Replay> {
+        let (width, height) = session.canvas()?;
+        Ok(Replay {
+            times: self.times(),
+            ignore: self.ignore.clone(),
+            width,
+            height,
+        })
+    }
 
     /// The PNG files in `dir`, sorted by name, as reference frames.
     ///
@@ -278,13 +303,12 @@ impl Session {
     pub fn diff_recorded(&self, options: &DiffOptions) -> Result<RecordedDiff> {
         let fps = self.scene().root.fps;
         let duration = self.graph()?.root.duration_frames;
-        let times: Vec<f64> = (0..options.frames.len())
-            .map(|i| options.start + i as f64 / options.fps)
-            .collect();
+        let replay = options.replay(self)?;
+        let times = &replay.times;
         if let Some((path, time)) = options
             .frames
             .iter()
-            .zip(&times)
+            .zip(times)
             .find(|(_, time)| **time * fps > duration)
         {
             return Err(Diagnostic::new(
@@ -296,19 +320,14 @@ impl Session {
             )
             .expected("as many reference frames as the scene lasts, or a later `--start`"));
         }
-        if let Some(dir) = &options.record {
-            check_recording(dir, options.reuse.as_deref().map(Reusing::dir))?;
+        if let Some(target) = &options.record {
+            check_recording(&target.dir, options.reuse.as_deref().map(Reusing::dir))?;
         }
         // The ignored layers are hidden from what is measured, and this
-        // session still draws them, to tell where the content window ends.
-        let hidden;
-        let (measured, shown) = match options.ignore.is_empty() {
-            true => (self, None),
-            false => {
-                hidden = self.hiding(&options.ignore)?;
-                (&hidden, Some(self))
-            }
-        };
+        // session still draws them, to tell where the content window ends:
+        // the sessions `nakkash frames` draws a recorded frame again with.
+        let replayer = self.replayer(&replay)?;
+        let (measured, shown) = (replayer.measured(), replayer.shown());
         // The coverage pass: every frame's masks, drawn or read, kept for
         // the measure pass.
         let covered = measured.each_frame(times.clone(), &|i, time| {
@@ -332,7 +351,7 @@ impl Session {
                 drawn: error(&pair, &pair.coverage, options.tolerance),
                 union: error(&pair, &union, options.tolerance),
             };
-            let record = origin.record(options.record.as_deref(), i, pair, &diff)?;
+            let record = origin.record(options.record.as_ref(), i, pair, &diff)?;
             Ok((diff, record))
         })?;
         let (frames, records): (Vec<FrameDiff>, Vec<Option<FrameRecord>>) =

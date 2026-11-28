@@ -10,7 +10,8 @@ use proptest::prelude::*;
 use rstest::rstest;
 
 use super::*;
-use crate::record::tests::{named, scratch};
+use crate::record::Quota;
+use crate::record::tests::{named, room, scratch};
 
 /// A 3 by 2 frame with every byte different, its coverage and, with
 /// `shown`, a shown mask: six pixels, so neither mask fills its last byte.
@@ -25,7 +26,7 @@ fn drawn(shown: bool) -> Drawn {
 /// `drawn(true)` written as frame 0 in a scratch folder for `name`.
 fn written(name: &str) -> PathBuf {
     let dir = scratch(name);
-    write_frame(&dir, 0, &drawn(true)).unwrap();
+    write_frame(&dir, 0, &drawn(true), &room()).unwrap();
     dir
 }
 
@@ -53,7 +54,7 @@ fn assert_invalid_at(error: &Diagnostic, file: &str) {
 fn a_frame_round_trips_bit_for_bit(#[case] shown: bool) {
     let dir = scratch(&format!("round-trip-{shown}"));
     let frame = drawn(shown);
-    write_frame(&dir, 7, &frame).unwrap();
+    write_frame(&dir, 7, &frame, &room()).unwrap();
     let read = read_frame(&dir, &named(7, &frame), 3, 2).unwrap();
     assert_eq!(read.ours.pixels(), frame.ours.pixels());
     assert_eq!(read.coverage, frame.coverage);
@@ -86,7 +87,7 @@ fn a_file_of_another_run_is_refused_against_its_record(#[case] file: &str) {
         coverage: vec![false; 6],
         shown: Some(vec![true; 6]),
     };
-    write_frame(&other, 0, &frame).unwrap();
+    write_frame(&other, 0, &frame, &room()).unwrap();
     fs::copy(other.join(file), dir.join(file)).unwrap();
     assert_invalid_at(&read_error(&dir), file);
     assert!(read_frame(&dir, &named(0, &frame), 3, 2).is_err());
@@ -101,7 +102,7 @@ fn a_frame_written_again_is_read_as_written_last() {
         coverage: vec![false; 6],
         shown: None,
     };
-    write_frame(&dir, 0, &frame).unwrap();
+    write_frame(&dir, 0, &frame, &room()).unwrap();
     assert_eq!(read_frame(&dir, &named(0, &frame), 3, 2).unwrap(), frame);
 }
 
@@ -123,7 +124,7 @@ fn a_large_frame_round_trips_bit_for_bit() {
         coverage,
         shown: None,
     };
-    write_frame(&dir, 1, &frame).unwrap();
+    write_frame(&dir, 1, &frame, &room()).unwrap();
     assert_eq!(
         read_frame(&dir, &named(1, &frame), width, height).unwrap(),
         frame
@@ -290,7 +291,7 @@ fn a_file_of_another_size_is_invalid(#[case] width: u32, #[case] height: u32) {
 #[test]
 fn a_missing_file_is_an_io_error() {
     let dir = scratch("missing");
-    write_frame(&dir, 0, &drawn(false)).unwrap();
+    write_frame(&dir, 0, &drawn(false), &room()).unwrap();
     assert_eq!(read_error(&dir).kind, Kind::Io);
     let other = named(1, &drawn(false));
     assert_eq!(read_frame(&dir, &other, 3, 2).unwrap_err().kind, Kind::Io);
@@ -309,7 +310,7 @@ fn a_mask_of_another_size_is_not_written(
         coverage,
         shown,
     };
-    let error = write_frame(&dir, 0, &frame).unwrap_err();
+    let error = write_frame(&dir, 0, &frame, &room()).unwrap_err();
     assert_eq!(error.kind, Kind::Invalid);
     assert!(error.expected.is_some());
     assert!(!dir.join("f0000.ours.lz4").exists());
@@ -332,4 +333,24 @@ proptest! {
         let _ = pixels_of(&with_header(Content::Pixels, Hex128(hash), &payload), 3, 2, hash);
         let _ = mask_of(&with_header(Content::Mask, Hex128(hash), &payload), 3, 2, hash);
     }
+}
+
+/// A frame whose files would pass the quota writes none of them, and a
+/// frame written takes exactly the bytes of its files.
+#[test]
+fn a_frame_is_written_within_its_quota_or_not_at_all() {
+    let dir = scratch("within-quota");
+    let quota = room();
+    write_frame(&dir, 0, &drawn(true), &quota).unwrap();
+    let files = |i: usize| [OURS, COVERAGE, SHOWN].map(|ending| file(&dir, i, ending));
+    let bytes: u64 = files(0)
+        .iter()
+        .map(|f| fs::metadata(f).unwrap().len())
+        .sum();
+    assert_eq!(quota.taken(), bytes);
+    let small = Quota::within(&dir, bytes - 1).unwrap();
+    let error = write_frame(&dir, 1, &drawn(true), &small).unwrap_err();
+    assert_eq!(error.kind, Kind::Io, "{error}");
+    assert!(files(1).iter().all(|f| !f.exists()));
+    assert_eq!(small.taken(), 0);
 }

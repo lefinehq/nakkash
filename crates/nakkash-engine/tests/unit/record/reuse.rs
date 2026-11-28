@@ -9,7 +9,7 @@ use rstest::rstest;
 
 use super::*;
 use crate::diff::{Error, FrameDiff};
-use crate::record::tests::scratch;
+use crate::record::tests::{room, scratch};
 use crate::record::{Build, Schema, Times, read_pinned, write_sample};
 
 /// The path of the scratch folder for `name`, made or not.
@@ -85,7 +85,7 @@ fn written(name: &str, change: impl FnOnce(&mut SampleRecord)) -> (PathBuf, Samp
     let dir = scratch(&format!("reuse-{name}"));
     let mut changed = record();
     change(&mut changed);
-    write_sample(&dir, &changed).unwrap();
+    write_sample(&dir, &changed, &room()).unwrap();
     let mut reuse = SampleReuse::every_frame(dir.clone()).unwrap();
     reuse.frames = (0..3).map(|i| (i, identities(i))).collect();
     (dir, reuse)
@@ -109,7 +109,7 @@ fn reuse_json(platform: &Platform, dir: &str) -> String {
 #[test]
 fn the_runner_may_vouch_for_every_frame_of_a_record() {
     let dir = scratch("reuse-every");
-    write_sample(&dir, &record()).unwrap();
+    write_sample(&dir, &record(), &room()).unwrap();
     let reuse = SampleReuse::every_frame(dir.clone()).unwrap();
     assert_eq!(reuse.dir, dir);
     assert_eq!(reuse.record, read_pinned(&dir).unwrap().1);
@@ -133,7 +133,7 @@ fn a_record_recorded_again_after_the_list_was_made_is_refused() {
     let (dir, reuse) = written("again", |_| {});
     let mut again = record();
     again.build.commit = Some("fedcba9876543210fedcba9876543210fedcba98".to_owned());
-    write_sample(&dir, &again).unwrap();
+    write_sample(&dir, &again, &room()).unwrap();
     let error = Reusing::open(&reuse).unwrap_err();
     assert_eq!(error.kind, Kind::Invalid, "{error}");
     let place = error.path.as_ref().expect("a path").to_string();
@@ -355,7 +355,7 @@ fn a_recording_is_checked_to_have_begun() {
     assert_eq!(error.kind, Kind::Invalid, "{error}");
     begin_recording(&other.join("not-made-yet"), None).unwrap();
     check_recording(&other.join("not-made-yet"), None).unwrap();
-    write_sample(&other, &record()).unwrap();
+    write_sample(&other, &record(), &room()).unwrap();
     let error = check_recording(&other, None).unwrap_err();
     assert_eq!(error.kind, Kind::Invalid, "{error}");
     begin_recording(&other, reused).unwrap();
@@ -396,10 +396,11 @@ fn every_reuse_error_message() {
             entry: Hex128(0xee),
             ..record()
         },
+        &room(),
     )
     .unwrap();
     let not_begun = scratch("reuse-errors-not-begun");
-    write_sample(&not_begun, &record()).unwrap();
+    write_sample(&not_begun, &record(), &room()).unwrap();
     let errors = [
         (
             "other platform",

@@ -42,6 +42,12 @@ pub(crate) fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+/// A quota with room for any record a test writes: a gibibyte, which the
+/// scratch folder's file system holds.
+pub(crate) fn room() -> Quota {
+    Quota::within(&std::env::temp_dir(), 1 << 30).expect("a gibibyte free")
+}
+
 /// A 3 by 2 frame with a shown mask.
 fn frame() -> Drawn {
     Drawn {
@@ -53,7 +59,7 @@ fn frame() -> Drawn {
 
 /// Writes [`frame`] as frame 0 of `dir`.
 fn fresh(dir: &Path) {
-    write_frame(dir, 0, &frame()).unwrap();
+    write_frame(dir, 0, &frame(), &room()).unwrap();
 }
 
 /// The error of reading frame 0 of `dir`, freshly written, then rewritten
@@ -86,7 +92,7 @@ fn disagreeing(dir: &Path, change: impl FnOnce(&mut FrameRecord)) -> String {
         entry: Hex128(0),
         frames: vec![frame],
     };
-    write_sample(dir, &record).unwrap();
+    write_sample(dir, &record, &room()).unwrap();
     read_sample(dir).unwrap_err().to_string()
 }
 
@@ -122,7 +128,7 @@ fn every_error_message() {
                 let other = scratch("errors-other");
                 let mut drawn = frame();
                 drawn.coverage = vec![false; 6];
-                write_frame(&other, 0, &drawn).unwrap();
+                write_frame(&other, 0, &drawn, &room()).unwrap();
                 *b = fs::read(other.join("f0000.cov")).unwrap();
             }),
         ),
@@ -147,7 +153,9 @@ fn every_error_message() {
         ),
         (
             "mask of another size",
-            write_frame(&dir, 1, &narrow).unwrap_err().to_string(),
+            write_frame(&dir, 1, &narrow, &room())
+                .unwrap_err()
+                .to_string(),
         ),
         ("record", {
             fs::write(dir.join(RECORD), "{}").unwrap();

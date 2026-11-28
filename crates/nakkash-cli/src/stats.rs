@@ -1,4 +1,5 @@
-//! `--stats`: what a command cost the machine ([D90]), printed at its end.
+//! `--stats`: what a command cost the machine ([D90]), printed at its end,
+//! and how many fidelity frames it drew and reused from a record.
 //!
 //! [D90]: https://github.com/lefinehq/nakkash/blob/main/docs/design/decisions.md#d90-a-frame-is-drawn-from-a-plan-that-knows-what-each-drawing-is-under-one-memory-budget
 
@@ -25,6 +26,7 @@ impl Start {
     pub fn report(&self) -> Vec<String> {
         let usage = nakkash_machine::usage();
         let memory = nakkash_engine::memory_stats();
+        let frames = nakkash_engine::frame_counts();
         let mib = |bytes: u64| bytes as f64 / MIB as f64;
         let over = memory.peak_working.saturating_sub(memory.budget);
         let swap = match (self.swap, nakkash_machine::swap()) {
@@ -67,6 +69,10 @@ impl Start {
                 "stats: plan: drawings reused {}; frames copied {}",
                 nakkash_engine::drawings_reused(),
                 nakkash_engine::frames_copied(),
+            ),
+            format!(
+                "stats: fidelity: frames drawn {}, reused from a record {}",
+                frames.drawn, frames.read
             ),
             format!("stats: swap: {} major faults; {swap}", usage.major_faults),
             format!("stats: storage: written {written}"),
