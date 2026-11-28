@@ -40,6 +40,7 @@ mod unix;
 
 mod alloc;
 
+pub use alloc::store as blocks;
 pub use alloc::{BIG, GivesBack};
 pub use parse::Psi;
 
