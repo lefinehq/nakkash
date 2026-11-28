@@ -128,11 +128,15 @@ fn a_record_of_another_form_is_invalid(#[case] from: &str, #[case] to: &str) {
 
 /// A frame's index is its place, and its file and time are its errors'.
 #[rstest]
-#[case::index(|f: &mut FrameRecord| f.index = 0)]
-#[case::file(|f: &mut FrameRecord| f.file = "f0009.png".to_owned())]
-#[case::time(|f: &mut FrameRecord| f.time = f64::from_bits(f.diff.time.to_bits() + 1))]
-fn a_record_whose_frames_disagree_is_invalid(#[case] change: fn(&mut FrameRecord)) {
-    let dir = scratch(&format!("disagree-{:p}", change as *const ()));
+#[case::index("index", |f: &mut FrameRecord| f.index = 0)]
+#[case::file("file", |f: &mut FrameRecord| f.file = "f0009.png".to_owned())]
+#[case::time("time", |f: &mut FrameRecord| f.time = f64::from_bits(f.diff.time.to_bits() + 1))]
+fn a_record_whose_frames_disagree_is_invalid(
+    #[case] name: &str,
+    #[case] change: fn(&mut FrameRecord),
+) {
+    // Named by the case, never by an address, so a run names it alike.
+    let dir = scratch(&format!("disagree-{name}"));
     let mut sample = record();
     change(&mut sample.frames[1]);
     write_sample(&dir, &sample).unwrap();
@@ -148,15 +152,74 @@ fn a_record_whose_frames_disagree_is_invalid(#[case] change: fn(&mut FrameRecord
     assert!(error.expected.is_some());
 }
 
-/// A recording begins by removing the folder's record, and only it.
+/// A key whose value may be null is still required: a record that lacks
+/// it was not written by this build, and is refused rather than read as
+/// null.
+#[rstest]
+#[case::tree("\"tree\"")]
+#[case::commit("\"commit\"")]
+#[case::shown("\"shown\"")]
+#[case::shown_mask("\"shown_mask\"")]
+#[case::psnr("\"psnr\"")]
+fn a_record_that_lacks_a_key_is_invalid(#[case] key: &str) {
+    let dir = scratch(&format!("lacks-{}", key.trim_matches('"')));
+    write_sample(&dir, &record()).unwrap();
+    let path = dir.join(RECORD);
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let name = key.trim_matches('"');
+    let removed = ["/build", "/frames/0", "/frames/0/diff/content"]
+        .iter()
+        .filter_map(|pointer| json.pointer_mut(pointer)?.as_object_mut()?.remove(name))
+        .count();
+    assert_eq!(removed, 1, "{name} is in one of them");
+    fs::write(&path, json.to_string()).unwrap();
+    let error = read_sample(&dir).unwrap_err();
+    assert_eq!(error.kind, Kind::Invalid, "{error}");
+    assert!(
+        error.message.contains(&format!("missing field `{name}`")),
+        "{error}"
+    );
+}
+
+/// A recording begins by removing the folder's record, then the frame
+/// files and the half-written files of recordings before it, and nothing
+/// else.
 #[test]
-fn beginning_a_recording_removes_the_record() {
+fn beginning_a_recording_removes_the_record_and_stale_frames() {
     let dir = scratch("begin");
     write_sample(&dir, &record()).unwrap();
-    fs::write(dir.join("f0000.cov"), b"frame").unwrap();
+    let stale = [
+        "f0000.cov",
+        "f0001.ours.lz4",
+        "f0012.shown",
+        "f12345.cov",
+        "f0000.cov.tmp",
+        "record.json.tmp",
+        "scene.json.tmp",
+    ];
+    let kept = [
+        "scene.json",
+        "f0000.png",
+        "f.cov",
+        "fx001.cov",
+        "f0000.ours",
+        "g0000.cov",
+        "notes.txt",
+    ];
+    for name in stale.iter().chain(&kept) {
+        fs::write(dir.join(name), b"frame").unwrap();
+    }
+    fs::create_dir(dir.join("f0002.cov")).unwrap();
     begin_sample(&dir).unwrap();
     assert!(!dir.join(RECORD).exists());
-    assert!(dir.join("f0000.cov").exists());
+    for name in stale {
+        assert!(!dir.join(name).exists(), "{name} is removed");
+    }
+    for name in kept {
+        assert!(dir.join(name).exists(), "{name} is kept");
+    }
+    assert!(dir.join("f0002.cov").is_dir(), "a folder is not ours");
     assert_eq!(read_sample(&dir).unwrap_err().kind, Kind::Io);
     // Again, with no record, and in a folder not made yet.
     begin_sample(&dir).unwrap();

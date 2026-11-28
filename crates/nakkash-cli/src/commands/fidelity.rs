@@ -9,8 +9,8 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use nakkash_engine::{
-    Change, Diagnostic, Ledger, Manifest, Measure, Result, Rule, Sample, Scoreboard, Verdict,
-    Window,
+    Change, Diagnostic, Ledger, Manifest, Measure, MeasureOptions, Result, Rule, Sample,
+    Scoreboard, Verdict, Window,
 };
 
 /// What to measure and where to keep it.
@@ -41,11 +41,15 @@ pub fn run(args: &Args<'_>) -> Result<ExitCode> {
     };
     let mut after = before.clone();
     let mut failed = false;
+    let options = MeasureOptions {
+        images: args.images,
+        ..MeasureOptions::default()
+    };
     for sample in &manifest.samples {
         if !args.only.is_empty() && !args.only.contains(&sample.id) {
             continue;
         }
-        match nakkash_engine::measure(sample, args.work, args.images) {
+        match nakkash_engine::measure(sample, args.work, &options) {
             Ok(measure) => {
                 print_measure(&sample.id, &measure);
                 after.samples.insert(sample.id.clone(), measure);

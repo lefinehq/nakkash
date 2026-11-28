@@ -1,5 +1,6 @@
 //! What a record holds, as serde types: every one refuses keys it does not
-//! know, so a record of another form is never half read.
+//! know, and requires every key it has, those whose value may be null too,
+//! so a record of another form is never half read.
 
 use std::fmt;
 use std::str::FromStr;
@@ -78,6 +79,12 @@ pub struct Platform {
     pub simd: String,
 }
 
+impl fmt::Display for Platform {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} with {}", self.target, self.simd)
+    }
+}
+
 impl Platform {
     /// This machine.
     pub fn current() -> Platform {
@@ -101,9 +108,12 @@ impl Platform {
 pub struct Build {
     /// The commit checked out, as `git rev-parse HEAD` gives it; none when
     /// the build could not tell.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub commit: Option<String>,
     /// The content hash of the tree's changes from that commit, tracked and
-    /// untracked; none when the tree was clean.
+    /// untracked; none when the tree was clean. Required, null or not: a
+    /// record without it does not say whether its tree was clean.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub tree: Option<Hex128>,
     /// The cargo profile, such as `release`.
     pub profile: String,
@@ -150,12 +160,14 @@ pub struct FrameRecord {
     pub bare: Hex128,
     /// The identity of the list with the ignored layers shown; none when no
     /// layer is ignored.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub shown: Option<Hex128>,
     /// The content hash of our pixels ([`pixels_hash`](super::pixels_hash)).
     pub ours_pixels: Hex128,
     /// The content hash of the coverage ([`mask_hash`](super::mask_hash)).
     pub coverage: Hex128,
     /// The content hash of the shown mask; none when no layer is ignored.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub shown_mask: Option<Hex128>,
     /// The frame's errors, unrounded.
     pub diff: FrameDiff,

@@ -1,0 +1,11 @@
+---
+source: crates/nakkash-engine/src/record/../../tests/unit/record/reuse.rs
+expression: text
+---
+other platform: <scratch>/reuse-errors/reuse.json: the reuse list was made on other-os with other, and this machine is <this platform>; expected a reuse list made on this platform
+unidentified build: <scratch>/reuse-errors-build/record.json: the record was made by a build that does not know its commit; expected a record made on this platform by a build that knows its commit; record the sample again
+record of another platform: <scratch>/reuse-errors-platform/record.json: the record was drawn on other-os with other, and this machine is <this platform>; expected a record made on this platform by a build that knows its commit; record the sample again
+not in the record: <scratch>/reuse-errors-short/record.json: frame 4 is vouched for, but the record holds 3 frames; expected a record of the frame's lists at the frame's time; record the sample again, or leave the frame out of the reuse list
+other lists: <scratch>/reuse-errors-lists/record.json: frame 1 draws ours 00000000000000000000000000000101, bare 00000000000000000000000000000201, shown 00000000000000000000000000000300, and its record names ours 00000000000000000000000000000001, bare 00000000000000000000000000000201, shown none; expected a record of the frame's lists at the frame's time; record the sample again, or leave the frame out of the reuse list
+other time: <scratch>/reuse-errors-time/record.json: frame 1 is at 0.1s, and its record at 0.25s; expected a record of the frame's lists at the frame's time; record the sample again, or leave the frame out of the reuse list
+same folder: <scratch>/reuse-errors-same/record.json: the run would record into <scratch>/reuse-errors-same, the folder it reuses; expected a record folder other than the one the run reuses

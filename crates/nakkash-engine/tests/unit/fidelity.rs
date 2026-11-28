@@ -3,9 +3,13 @@
 //! place of the project's, ledgers compared, and verdicts scored under both
 //! rules.
 
+use std::sync::Arc;
+
 use pretty_assertions::assert_eq;
 
 use super::*;
+use crate::diff::tests::renders;
+use crate::record::{Build, Platform, RECORD, Reuse, ReuseSchema, SampleReuse, read_sample};
 
 /// A fixture project with one star, which the import does not support.
 const STAR: &str = concat!(
@@ -19,6 +23,15 @@ fn scratch(name: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create a scratch folder");
     dir
+}
+
+/// Measure options that write error images when `images` is set, and
+/// neither record nor reuse.
+fn with_images(images: bool) -> MeasureOptions {
+    MeasureOptions {
+        images,
+        ..MeasureOptions::default()
+    }
 }
 
 /// A measure with every error at `error` and no text.
@@ -115,7 +128,7 @@ fn a_sample_measured_against_its_own_frames_has_no_error() {
         fs::write(first.reference.join(format!("f{i}.png")), png).unwrap();
     }
     let sample = Sample { fps: 0.5, ..first };
-    let measure = measure(&sample, &work, true).unwrap();
+    let measure = measure(&sample, &work, &with_images(true)).unwrap();
     assert!(measure.unsupported.is_empty(), "{measure:?}");
     assert_eq!((measure.texts, measure.text_worst), (0, Some(0.0)));
     assert_eq!(measure.all.frames, 3);
@@ -141,14 +154,14 @@ fn a_sample_measured_against_its_own_frames_has_no_error() {
         floor: Some(floor.clone()),
         ..sample.clone()
     };
-    let measure = super::measure(&floored, &work, false).unwrap();
+    let measure = super::measure(&floored, &work, &with_images(false)).unwrap();
     assert_eq!(measure.all.floor.map(|f| (f * 1e6).round()), Some(20_000.0));
     assert_eq!(measure.all.frames_passing_floor, Some(3));
     let settled = measure.settled.and_then(|w| w.floor);
     assert_eq!(settled.map(|f| (f * 1e6).round()), Some(25_000.0));
     // Floors made for other frames are refused, not applied.
     fs::write(&floor, r#"{"frames":{"f0.png":0.01,"f1.png":0.02}}"#).unwrap();
-    let stale = super::measure(&floored, &work, false).unwrap_err();
+    let stale = super::measure(&floored, &work, &with_images(false)).unwrap_err();
     assert!(
         stale
             .message
@@ -201,7 +214,7 @@ fn a_sample_is_measured_over_the_background_its_reference_shows() {
     };
     // Over the project's background, everything the star leaves uncovered
     // fails.
-    let measure = super::measure(&project, &work, false).unwrap();
+    let measure = super::measure(&project, &work, &with_images(false)).unwrap();
     assert_eq!(measure.all.frames_passing, Some(0));
     assert_eq!(measure.bg, None);
     // Over the reference's, nothing does, and the measure says what it was
@@ -210,7 +223,7 @@ fn a_sample_is_measured_over_the_background_its_reference_shows() {
         bg: Some(other.into()),
         ..project.clone()
     };
-    let measure = super::measure(&given, &work, false).unwrap();
+    let measure = super::measure(&given, &work, &with_images(false)).unwrap();
     assert_eq!(measure.all.content_failing, Some(0.0));
     assert_eq!(measure.all.frames_passing, Some(2));
     assert_eq!(measure.bg.as_deref(), Some(other));
@@ -235,7 +248,7 @@ fn a_sample_is_measured_over_the_background_its_reference_shows() {
         bg: Some("dark".into()),
         ..project
     };
-    let error = super::measure(&wrong, &work, false).unwrap_err();
+    let error = super::measure(&wrong, &work, &with_images(false)).unwrap_err();
     assert!(
         error.message.starts_with("sample `star`: "),
         "{}",
@@ -688,4 +701,226 @@ fn a_ledger_from_before_floors_reads_and_compares_as_strict() {
             .iter()
             .all(|c| c.better == Some(false))
     );
+}
+
+/// The star sample, compared every second over its first two seconds, with
+/// its reference drawn from its own scene into `dir`.
+fn star_sample(dir: &Path) -> Sample {
+    let import = import_scene(STAR, &Options::default(), None).unwrap();
+    let session: Session = write_document(&import.json).parse().unwrap();
+    let fps = import.json["fps"].as_f64().unwrap();
+    let reference = dir.join("reference");
+    fs::create_dir_all(&reference).unwrap();
+    for (i, frame) in [0.0, fps, 2.0 * fps].iter().enumerate() {
+        let png = session.render(*frame).unwrap().to_png().unwrap();
+        fs::write(reference.join(format!("f{i}.png")), png).unwrap();
+    }
+    Sample {
+        project: STAR.into(),
+        reference,
+        fps: 1.0,
+        settled: Some(1.0),
+        ..sample("star", None)
+    }
+}
+
+/// Options recording into `dir` with an identified build.
+fn recording(dir: &Path) -> MeasureOptions {
+    MeasureOptions {
+        record: Some(Recording {
+            dir: dir.to_path_buf(),
+            build: Build {
+                commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+                tree: None,
+                profile: "test".to_owned(),
+            },
+        }),
+        ..MeasureOptions::default()
+    }
+}
+
+/// Options reusing every frame of the samples recorded under `dir`, as a
+/// runner vouching for an unchanged build writes them.
+fn reusing_all(dir: &Path, ids: &[&str]) -> MeasureOptions {
+    let samples = ids
+        .iter()
+        .map(|id| {
+            let sample = dir.join(id);
+            let record = read_sample(&sample).unwrap();
+            ((*id).to_owned(), SampleReuse::every_frame(sample, &record))
+        })
+        .collect();
+    MeasureOptions {
+        reuse: Some(Arc::new(Reuse {
+            schema: ReuseSchema::V1,
+            platform: Platform::current(),
+            samples,
+        })),
+        ..MeasureOptions::default()
+    }
+}
+
+/// A measure and how many renders it drew.
+fn measured(sample: &Sample, work: &Path, options: &MeasureOptions) -> (Measure, usize) {
+    let mut measure = None;
+    let n = renders(|| measure = Some(super::measure(sample, work, options).unwrap()));
+    (measure.unwrap(), n)
+}
+
+#[test]
+fn a_recorded_sample_reused_draws_nothing_and_writes_the_same_ledger() {
+    let dir = scratch("record-reuse");
+    let work = dir.join("work");
+    let records = dir.join("records");
+    let sample = star_sample(&dir);
+    let (full, drawn) = measured(&sample, &work, &recording(&records));
+    assert_eq!(drawn, 3 * 2, "each frame's coverage and ours");
+    let record = read_sample(&records.join("star")).unwrap();
+    assert_eq!(record.sample, "star");
+    assert_eq!(record.entry, sample.entry().unwrap());
+    assert_eq!(record.platform, Platform::current());
+    assert_eq!(record.build.commit.as_deref().map(str::len), Some(40));
+    assert_eq!(record.frames.len(), 3);
+    let (reused, n) = measured(&sample, &work, &reusing_all(&records, &["star"]));
+    assert_eq!(n, 0);
+    assert_eq!(reused, full);
+    let ledger = |measure: Measure| {
+        Ledger {
+            samples: BTreeMap::from([("star".to_owned(), measure)]),
+        }
+        .to_json()
+    };
+    assert_eq!(ledger(reused), ledger(full.clone()));
+    // A run without a record or a list measures the same.
+    assert_eq!(measured(&sample, &work, &with_images(false)).0, full);
+}
+
+/// A changed manifest entry is a changed sample: its record is not reused
+/// even where every frame draws the same lists, and it is measured afresh.
+#[test]
+fn a_sample_whose_manifest_entry_changed_is_drawn_whole() {
+    let dir = scratch("entry");
+    let work = dir.join("work");
+    let records = dir.join("records");
+    let sample = star_sample(&dir);
+    measured(&sample, &work, &recording(&records));
+    let changed = Sample {
+        excluded: Some("a reference of other footage".to_owned()),
+        ..sample.clone()
+    };
+    assert_ne!(changed.entry().unwrap(), sample.entry().unwrap());
+    let (reused, n) = measured(&changed, &work, &reusing_all(&records, &["star"]));
+    assert_eq!(n, 3 * 2);
+    assert_eq!(reused, measured(&changed, &work, &with_images(false)).0);
+    // Still never recorded over: the folder it would reuse is refused
+    // whether or not its record is reused.
+    let into_itself = MeasureOptions {
+        record: recording(&records).record,
+        ..reusing_all(&records, &["star"])
+    };
+    let error = super::measure(&changed, &work, &into_itself).unwrap_err();
+    assert_eq!(error.kind, Kind::Invalid, "{error}");
+    assert!(records.join("star").join(RECORD).exists());
+}
+
+#[test]
+fn a_sample_the_reuse_list_does_not_name_is_drawn() {
+    let dir = scratch("unnamed");
+    let work = dir.join("work");
+    let records = dir.join("records");
+    let sample = star_sample(&dir);
+    let (full, _) = measured(&sample, &work, &recording(&records));
+    let mut options = reusing_all(&records, &["star"]);
+    let reuse = options.reuse.as_mut().map(Arc::make_mut).unwrap();
+    let only = reuse.samples.remove("star").unwrap();
+    reuse.samples.insert("other".to_owned(), only);
+    let (measure, n) = measured(&sample, &work, &options);
+    assert_eq!((measure, n), (full, 3 * 2));
+}
+
+#[test]
+fn a_sample_whose_record_is_gone_is_an_error() {
+    let dir = scratch("gone");
+    let work = dir.join("work");
+    let records = dir.join("records");
+    let sample = star_sample(&dir);
+    measured(&sample, &work, &recording(&records));
+    let options = reusing_all(&records, &["star"]);
+    fs::remove_file(records.join("star").join(RECORD)).unwrap();
+    let error = super::measure(&sample, &work, &options).unwrap_err();
+    assert_eq!(error.kind, Kind::Io, "{error}");
+    assert!(error.message.starts_with("sample `star`: "), "{error}");
+}
+
+#[test]
+fn a_failing_sample_leaves_no_record() {
+    let dir = scratch("failing");
+    let work = dir.join("work");
+    let records = dir.join("records");
+    let record = records.join("star").join(RECORD);
+    let sample = star_sample(&dir);
+    super::measure(&sample, &work, &recording(&records)).unwrap();
+    assert!(record.exists());
+    // A reference frame of the wrong size fails the sample as it draws.
+    let small = crate::Image::new(2, 2, vec![0; 16]).unwrap();
+    fs::write(sample.reference.join("f1.png"), small.to_png().unwrap()).unwrap();
+    let error = super::measure(&sample, &work, &recording(&records)).unwrap_err();
+    assert_eq!(error.kind, Kind::Invalid, "{error}");
+    assert!(!record.exists());
+    // A sample that fails before it draws leaves none either, not even the
+    // record of the run before it.
+    let sample = star_sample(&dir);
+    super::measure(&sample, &work, &recording(&records)).unwrap();
+    assert!(record.exists());
+    let missing = Sample {
+        project: dir.join("missing.aep"),
+        ..sample
+    };
+    assert!(super::measure(&missing, &work, &recording(&records)).is_err());
+    assert!(!record.exists());
+}
+
+#[test]
+fn a_sample_is_known_by_its_whole_entry() {
+    let base = sample("s1", None);
+    let entries = [
+        base.clone(),
+        Sample {
+            bg: Some("#000000".to_owned()),
+            ..base.clone()
+        },
+        Sample {
+            ignore: vec!["plate".parse().unwrap()],
+            ..base.clone()
+        },
+        Sample {
+            settled: None,
+            ..base.clone()
+        },
+        Sample {
+            floor: Some(PathBuf::from("floor.json")),
+            ..base.clone()
+        },
+        Sample {
+            id: "s2".to_owned(),
+            ..base.clone()
+        },
+    ];
+    let hashes: std::collections::BTreeSet<u128> =
+        entries.iter().map(|s| s.entry().unwrap().0).collect();
+    assert_eq!(hashes.len(), entries.len());
+    assert_eq!(base.entry().unwrap(), sample("s1", None).entry().unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_entry_whose_path_is_not_unicode_is_not_hashed() {
+    use std::os::unix::ffi::OsStrExt;
+    let sample = Sample {
+        project: PathBuf::from(std::ffi::OsStr::from_bytes(b"\xff.aep")),
+        ..sample("s1", None)
+    };
+    let error = sample.entry().unwrap_err();
+    assert_eq!(error.kind, Kind::Invalid, "{error}");
+    assert!(error.expected.is_some());
 }

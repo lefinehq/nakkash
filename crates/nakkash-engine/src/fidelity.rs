@@ -27,12 +27,17 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use nakkash_format::{Address, Diagnostic, Kind, Result};
+use nakkash_hash::content_hash;
 use nakkash_import::map::Options;
 use serde::{Deserialize, Serialize};
 
 use crate::diff::{Floor, FrameDiff, file_name};
+use crate::record::{
+    Build, Hex128, Platform, Reuse, Reusing, SampleRecord, Schema, begin_recording, write_sample,
+};
 use crate::{
     DiffOptions, Session, import_scene, measure_layouts, substitute_fonts, write_document,
 };
@@ -46,7 +51,7 @@ pub struct Manifest {
 }
 
 /// One sample: a project, the composition to import, and its reference.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sample {
     /// The id the ledger knows it by; never a product or template name.
@@ -175,6 +180,51 @@ impl Floors {
             })
             .collect()
     }
+}
+
+/// The tag of [`Sample::entry`].
+const ENTRY: &str = "nakkash.record.entry";
+
+impl Sample {
+    /// The content hash of this entry as serialised, every key with its
+    /// paths as read: a record names the entry it was made from, and a
+    /// sample whose entry changed is a changed sample, drawn whole.
+    ///
+    /// # Errors
+    /// An invalid diagnostic when the entry cannot be serialised, such as
+    /// a path that is not Unicode.
+    pub fn entry(&self) -> Result<Hex128> {
+        let bytes = serde_json::to_vec(self).map_err(|e| {
+            Diagnostic::new(
+                Kind::Invalid,
+                format!("cannot hash the manifest entry: {e}"),
+            )
+            .expected("a manifest entry whose paths are Unicode")
+        })?;
+        Ok(Hex128(content_hash(ENTRY, &bytes)))
+    }
+}
+
+/// How [`measure`] runs, besides the measure itself.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MeasureOptions {
+    /// Whether to write an error image per frame, into `errors/` in the
+    /// sample's work folder.
+    pub images: bool,
+    /// Where and with what build to record the sample, if anywhere.
+    pub record: Option<Recording>,
+    /// The frames a runner allows to be reused, if any.
+    pub reuse: Option<Arc<Reuse>>,
+}
+
+/// Where a fidelity run records its samples, and what build it is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Recording {
+    /// The folder of the records: each sample's goes into the folder named
+    /// by its id.
+    pub dir: PathBuf,
+    /// The build drawing them, as the binary names itself.
+    pub build: Build,
 }
 
 impl Manifest {
@@ -361,17 +411,41 @@ fn round(value: &mut serde_json::Value) {
 /// ([`substitute_fonts`]), and every use counts as unsupported, so the
 /// sample is measured without its gap being hidden.
 ///
+/// With [`MeasureOptions::record`], the sample is recorded into its folder:
+/// the folder's record is removed before anything else, the frames are
+/// written as they are drawn, and the record ([`SampleRecord`]) last, once
+/// the whole sample has measured, so a sample that fails leaves none. With
+/// [`MeasureOptions::reuse`] naming the sample, its record is opened
+/// ([`Reusing::open`]) and its frames stand in for draws where the runner
+/// vouches for them ([`Reusing::frame`]); a record made from another entry
+/// ([`Sample::entry`]) is not reused, and the sample is drawn whole.
+///
 /// # Errors
 /// The import's, the session's or the diff's diagnostics, under the
 /// sample's id; text that cannot be laid out (a glyph no face has) is an
 /// error too, since a measure without it would flatter the sample, and so
 /// are floors that do not give one for each reference frame and a
-/// background that is not a colour.
-pub fn measure(sample: &Sample, work: &Path, images: bool) -> Result<Measure> {
+/// background that is not a colour; and so are a record that cannot be
+/// opened for reuse or written, and a reused frame that cannot be read.
+pub fn measure(sample: &Sample, work: &Path, options: &MeasureOptions) -> Result<Measure> {
     let under = |d: Diagnostic| {
         let message = format!("sample `{}`: {}", sample.id, d.message);
         Diagnostic { message, ..d }
     };
+    let entry = sample.entry().map_err(under)?;
+    let opened = (options.reuse.as_ref())
+        .and_then(|reuse| reuse.samples.get(&sample.id))
+        .map(Reusing::open)
+        .transpose()
+        .map_err(under)?;
+    let recording = (options.record.as_ref()).map(|record| (record.dir.join(&sample.id), record));
+    if let Some((dir, _)) = &recording {
+        begin_recording(dir, opened.as_ref()).map_err(under)?;
+    }
+    // A record made from another entry is of another sample: drawn whole.
+    let reusing = (opened)
+        .filter(|reusing| reusing.record().entry == entry)
+        .map(Arc::new);
     let dir = work.join(&sample.id);
     fs::create_dir_all(&dir).map_err(|e| under(Diagnostic::io("create", &dir, &e)))?;
     let fonts = sample
@@ -379,19 +453,19 @@ pub fn measure(sample: &Sample, work: &Path, images: bool) -> Result<Measure> {
         .iter()
         .map(|font| absolute(font).display().to_string())
         .collect();
-    let options = Options {
+    let import_options = Options {
         comp: sample.comp.clone(),
         fonts,
         ..Options::default()
     };
     // Footage is named by absolute paths, as fonts are, so the scene finds
     // it from the work folder without a copy.
-    let mut import = import_scene(&sample.project, &options, None).map_err(under)?;
+    let mut import = import_scene(&sample.project, &import_options, None).map_err(under)?;
     // The sample's fonts are absolute, so the scene finds them from anywhere.
     let unset: Session = write_document(&import.json).parse().map_err(under)?;
     let fonts = unset.fonts().map_err(under)?;
     substitute_fonts(&mut import, fonts).map_err(under)?;
-    measure_layouts(&sample.project, &options, None, &mut import, fonts).map_err(under)?;
+    measure_layouts(&sample.project, &import_options, None, &mut import, fonts).map_err(under)?;
     // Only the measured scene changes: the background is how the reference
     // was rendered, not what the project holds.
     if let (Some(bg), Some(scene)) = (&sample.bg, import.json.as_object_mut()) {
@@ -411,22 +485,25 @@ pub fn measure(sample: &Sample, work: &Path, images: bool) -> Result<Measure> {
         ),
         None => None,
     };
-    let diff = session
-        .diff(&DiffOptions {
+    let recorded = session
+        .diff_recorded(&DiffOptions {
             frames,
             fps: sample.fps,
             start: sample.start,
             tolerance: DiffOptions::TOLERANCE,
-            images: images.then(|| dir.join("errors")),
+            images: options.images.then(|| dir.join("errors")),
             ignore: sample.ignore.clone(),
+            record: recording.as_ref().map(|(dir, _)| dir.clone()),
+            reuse: reusing,
         })
         .map_err(under)?;
+    let diff = recorded.diff;
     let mut unsupported = BTreeMap::new();
     for finding in &import.mapping.unsupported {
         *unsupported.entry(finding.what.clone()).or_insert(0) += 1;
     }
     let worst = geometry.texts.iter().map(|t| t.off()).fold(0.0, f64::max);
-    Ok(Measure {
+    let measure = Measure {
         unsupported,
         texts: geometry.texts.len(),
         texts_within: geometry.texts.len() - geometry.failing().count(),
@@ -448,7 +525,19 @@ pub fn measure(sample: &Sample, work: &Path, images: bool) -> Result<Measure> {
             window(&frames, floors.is_some().then_some(&held[..]), from)
         }),
         bg: sample.bg.clone(),
-    })
+    };
+    if let (Some((dir, recording)), Some(frames)) = (recording, recorded.frames) {
+        let record = SampleRecord {
+            schema: Schema::V1,
+            sample: sample.id.clone(),
+            platform: Platform::current(),
+            build: recording.build.clone(),
+            entry,
+            frames,
+        };
+        write_sample(&dir, &record).map_err(under)?;
+    }
+    Ok(measure)
 }
 
 /// `path` from the filesystem root, so a scene written elsewhere finds it.

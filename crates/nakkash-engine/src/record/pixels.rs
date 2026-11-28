@@ -24,9 +24,12 @@ use std::path::{Path, PathBuf};
 
 use binrw::{BinRead, BinWrite, binrw};
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
+use nakkash_format::grammar::parse_whole;
 use nakkash_format::{Diagnostic, Kind, Place, Result};
 use nakkash_hash::{ContentHasher, content_hash};
 use nakkash_raster::Image;
+use winnow::ascii::digit1;
+use winnow::combinator::alt;
 
 use super::files::write_whole;
 use super::{Drawn, FrameRecord, Hex128};
@@ -210,36 +213,69 @@ pub fn write_frame(dir: &Path, index: usize, drawn: &Drawn) -> Result<()> {
 }
 
 /// Reads the frame `record` names from `dir`, a `width` by `height` frame,
-/// with its shown mask when the record names one.
+/// with its shown mask when the record names one: [`read_ours`] and
+/// [`read_masks`].
 ///
 /// # Errors
-/// An I/O diagnostic when a file cannot be read, or an invalid one, with
+/// As [`read_ours`] and [`read_masks`].
+pub fn read_frame(dir: &Path, record: &FrameRecord, width: u32, height: u32) -> Result<Drawn> {
+    let ours = read_ours(dir, record, width, height)?;
+    let (coverage, shown) = read_masks(dir, record, width, height)?;
+    Ok(Drawn {
+        ours,
+        coverage,
+        shown,
+    })
+}
+
+/// Reads our pixels of the frame `record` names from `dir`, a `width` by
+/// `height` frame.
+///
+/// # Errors
+/// An I/O diagnostic when the file cannot be read, or an invalid one, with
 /// the file's path, when it does not hold what the record names: it is not
 /// a pixel file, holds the other kind, another frame's size or other
 /// pixels, or is cut short or damaged.
-pub fn read_frame(dir: &Path, record: &FrameRecord, width: u32, height: u32) -> Result<Drawn> {
-    let index = record.index;
-    let ours = read_file(&file(dir, index, OURS), |bytes| {
+pub fn read_ours(dir: &Path, record: &FrameRecord, width: u32, height: u32) -> Result<Image> {
+    let ours = read_file(&file(dir, record.index, OURS), |bytes| {
         pixels_of(bytes, width, height, record.ours_pixels.0)
     })?;
+    Image::new(width, height, ours)
+}
+
+/// Reads the coverage of the frame `record` names from `dir`, a `width` by
+/// `height` frame, and its shown mask when the record names one.
+///
+/// # Errors
+/// As [`read_ours`], for each mask file.
+pub fn read_masks(
+    dir: &Path,
+    record: &FrameRecord,
+    width: u32,
+    height: u32,
+) -> Result<(Vec<bool>, Option<Vec<bool>>)> {
     let mask = |ending, hash: Hex128| {
-        read_file(&file(dir, index, ending), |bytes| {
+        read_file(&file(dir, record.index, ending), |bytes| {
             mask_of(bytes, width, height, hash.0)
         })
     };
-    Ok(Drawn {
-        ours: Image::new(width, height, ours)?,
-        coverage: mask(COVERAGE, record.coverage)?,
-        shown: record
-            .shown_mask
-            .map(|hash| mask(SHOWN, hash))
-            .transpose()?,
-    })
+    let coverage = mask(COVERAGE, record.coverage)?;
+    let shown = (record.shown_mask)
+        .map(|hash| mask(SHOWN, hash))
+        .transpose()?;
+    Ok((coverage, shown))
 }
 
 /// The file of frame `index` in `dir` with `ending`, such as `f0000.cov`.
 fn file(dir: &Path, index: usize, ending: &str) -> PathBuf {
     dir.join(format!("f{index:04}.{ending}"))
+}
+
+/// Whether `name` is the name of a frame file [`file`] makes, of any frame:
+/// `f`, the frame's index, then one of the endings.
+pub(super) fn is_frame_file(name: &str) -> bool {
+    let grammar = ("f", digit1, ".", alt((OURS, COVERAGE, SHOWN)));
+    parse_whole(name, grammar, "frame file", "`f0000.cov`").is_ok()
 }
 
 /// Writes `header` then `payload` to the file at `path`, whole.

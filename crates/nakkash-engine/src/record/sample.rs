@@ -10,6 +10,7 @@ use nakkash_format::{Diagnostic, Kind, Place, Result};
 
 use super::SampleRecord;
 use super::files::{sync_dir, write_whole};
+use super::pixels::is_frame_file;
 
 /// The name of a sample's record file in its folder.
 pub const RECORD: &str = "record.json";
@@ -19,22 +20,43 @@ const EXPECTED: &str = r#"a record written by this build: {"schema":"nakkash.Fid
 
 /// Begins a recording into `dir`, which it makes if needed: removes the
 /// folder's record, for good, before any frame of the new recording is
-/// written over the old ones, so a recording that stops part way leaves no
-/// record beside frames it does not name.
+/// written, so a recording that stops part way leaves no record beside
+/// frames it does not name; then the frame files of the recordings before
+/// it, so none outlives them, and every half-written file (`.tmp`).
+/// Folders, and files of other names, are left as they are.
 ///
 /// # Errors
-/// An I/O diagnostic when the folder cannot be made, or its record cannot
-/// be removed.
+/// An I/O diagnostic when the folder cannot be made or read, or a file in
+/// it cannot be removed.
 pub fn begin_sample(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir).map_err(|e| Diagnostic::io("create", dir, &e))?;
-    let path = dir.join(RECORD);
-    match fs::remove_file(&path) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => {
-            return Err(Diagnostic::io("remove", &path, &e));
+    remove(&dir.join(RECORD))?;
+    sync_dir(dir)?;
+    let entries = fs::read_dir(dir).map_err(|e| Diagnostic::io("read", dir, &e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| Diagnostic::io("read", dir, &e))?;
+        let path = entry.path();
+        if path.is_file() && stale(&path) {
+            remove(&path)?;
         }
-        _ => {}
     }
     sync_dir(dir)
+}
+
+/// Whether the file at `path` is one a recording leaves behind: a frame
+/// file, or one written part way.
+fn stale(path: &Path) -> bool {
+    let name = path.file_name().map(|name| name.to_string_lossy());
+    let half_written = path.extension().is_some_and(|ending| ending == "tmp");
+    half_written || name.is_some_and(|name| is_frame_file(&name))
+}
+
+/// Removes the file at `path`, if there is one.
+fn remove(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(Diagnostic::io("remove", path, &e)),
+        _ => Ok(()),
+    }
 }
 
 /// Writes `record` as `record.json` in `dir`, whole: to `record.json.tmp`,

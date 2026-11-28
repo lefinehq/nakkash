@@ -23,14 +23,18 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
-use std::thread;
+use std::sync::Arc;
 
 use nakkash_format::{Address, Diagnostic, Kind, Result};
-use nakkash_raster::{Frame, Image, RenderOptions};
+use nakkash_raster::Image;
 use serde::{Deserialize, Serialize};
 
 use crate::Session;
+use crate::record::{FrameRecord, Reusing, begin_recording};
+
+mod frames;
+
+use frames::Origin;
 
 /// What to compare with, and how.
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +52,18 @@ pub struct DiffOptions {
     /// Layers left out of the drawing and the measure, by address: what the
     /// reference shows differently on purpose, such as a placeholder.
     pub ignore: Vec<Address>,
+    /// A folder to record each frame into, if any: its pixels and masks, as
+    /// files ([`write_frame`](crate::record::write_frame)), and its record,
+    /// returned by [`Session::diff_recorded`]. The folder's record is
+    /// removed first ([`begin_sample`](crate::record::begin_sample)); the
+    /// caller writes the new one once it has measured the whole sample.
+    pub record: Option<PathBuf>,
+    /// A sample's record whose frames may stand in for draws, if any: a
+    /// frame is read from it in place of drawing it when the runner vouches
+    /// for it and the runner, the record and this run agree on what it
+    /// draws ([`Reusing::frame`]). Everything after the draws is measured
+    /// as always, so the diff is the one drawing every frame gives.
+    pub reuse: Option<Arc<Reusing>>,
 }
 
 impl DiffOptions {
@@ -103,6 +119,8 @@ pub struct Error {
     /// The mean absolute difference over their channels, 0 to 1.
     pub mean: f64,
     /// The peak signal-to-noise ratio in dB; `None` when they are equal.
+    /// Required when read, null or not, as every key of a record is.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub psnr: Option<f64>,
     /// The share of them with a channel past the tolerance, 0 to 1.
     pub failing: f64,
@@ -203,6 +221,15 @@ pub struct Diff {
     pub union_failing: Pooled,
 }
 
+/// A diff, with the record of each frame when it was asked to record.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordedDiff {
+    /// The comparison.
+    pub diff: Diff,
+    /// What each frame drew, in order, when [`DiffOptions::record`] is set.
+    pub frames: Option<Vec<FrameRecord>>,
+}
+
 /// One frame drawn and read: our pixels, where we draw, and the reference's.
 pub(crate) struct Pair {
     /// Our frame, as `render` draws it.
@@ -216,8 +243,9 @@ pub(crate) struct Pair {
     reference: Image,
 }
 
-/// One frame's masks: drawn once in the coverage pass, which needs them for
-/// the union, and kept for the measure pass, so it draws only our frame.
+/// One frame's masks: drawn once in the coverage pass, or read from a
+/// record, since it needs them for the union, and kept for the measure
+/// pass, so it draws only our frame.
 pub(crate) struct Masks {
     /// Whether the measured scene draws each pixel, before the background.
     pub(crate) coverage: Vec<bool>,
@@ -230,10 +258,22 @@ impl Session {
     /// Compares the scene with the reference frames in `options`.
     ///
     /// # Errors
-    /// A diagnostic when a reference frame cannot be read, is not the
-    /// scene's size, or falls past the scene's end; or as
-    /// [`Session::render_with`].
+    /// As [`Session::diff_recorded`].
     pub fn diff(&self, options: &DiffOptions) -> Result<Diff> {
+        self.diff_recorded(options).map(|recorded| recorded.diff)
+    }
+
+    /// Compares the scene with the reference frames in `options`, and
+    /// records each frame when [`DiffOptions::record`] is set.
+    ///
+    /// # Errors
+    /// A diagnostic when a reference frame cannot be read, is not the
+    /// scene's size, or falls past the scene's end; when a frame's record
+    /// cannot be written, or a frame the options reuse cannot be read
+    /// ([`Reusing::frame`], [`read_ours`](crate::record::read_ours)); when
+    /// the run would record into the folder it reuses; or as
+    /// [`Session::render_with`].
+    pub fn diff_recorded(&self, options: &DiffOptions) -> Result<RecordedDiff> {
         let fps = self.scene().root.fps;
         let duration = self.graph()?.root.duration_frames;
         let times: Vec<f64> = (0..options.frames.len())
@@ -254,6 +294,9 @@ impl Session {
             )
             .expected("as many reference frames as the scene lasts, or a later `--start`"));
         }
+        if let Some(dir) = &options.record {
+            begin_recording(dir, options.reuse.as_deref())?;
+        }
         // The ignored layers are hidden from what is measured, and this
         // session still draws them, to tell where the content window ends.
         let hidden;
@@ -264,35 +307,36 @@ impl Session {
                 (&hidden, Some(self))
             }
         };
-        // The coverage pass: every frame's masks, kept for the measure pass.
-        let masks = measured.each_frame(times.len(), &|i| measured.masks(shown, times[i]))?;
+        // The coverage pass: every frame's masks, drawn or read, kept for
+        // the measure pass.
+        let covered = measured.each_frame(times.clone(), &|i, time| {
+            measured.cover(shown, options, i, time)
+        })?;
+        let (masks, origins): (Vec<Masks>, Vec<Origin<'_>>) = covered.into_iter().unzip();
         let union = union(&masks);
-        // The measure pass: frame `i` takes its own masks, once. A lock per
-        // frame hands each its masks without the frames waiting on each other.
-        let masks: Vec<Mutex<Option<Masks>>> =
-            masks.into_iter().map(|m| Mutex::new(Some(m))).collect();
-        let frames = measured.each_frame(times.len(), &|i| {
-            let masks = masks[i]
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-                .expect("each frame's masks are taken once");
-            let pair = measured.pair(options, times[i], i, masks)?;
+        // The measure pass: each frame takes its own masks.
+        let inputs: Vec<(Masks, Origin<'_>)> = masks.into_iter().zip(origins).collect();
+        let measured_frames = measured.each_frame(inputs, &|i, (masks, origin)| {
+            let (pair, origin) = measured.pair(options, times[i], i, masks, origin)?;
             let file = file_name(&options.frames[i]);
             let content = content(&pair, options.tolerance);
             if let Some(dir) = &options.images {
                 write_error_image(dir, &file, &pair, &union, &content, options.tolerance)?;
             }
-            Ok(FrameDiff {
+            let diff = FrameDiff {
                 file,
                 time: times[i],
                 content: error(&pair, &content, options.tolerance),
                 drawn: error(&pair, &pair.coverage, options.tolerance),
                 union: error(&pair, &union, options.tolerance),
-            })
+            };
+            let record = origin.record(options.record.as_deref(), i, pair, &diff)?;
+            Ok((diff, record))
         })?;
+        let (frames, records): (Vec<FrameDiff>, Vec<Option<FrameRecord>>) =
+            measured_frames.into_iter().unzip();
         let pool = |pick: fn(&FrameDiff) -> f64| pooled(&frames, pick);
-        Ok(Diff {
+        let diff = Diff {
             tolerance: options.tolerance,
             content_mean: pool(|f| f.content.mean),
             content_failing: pool(|f| f.content.failing),
@@ -301,104 +345,11 @@ impl Session {
             union_mean: pool(|f| f.union.mean),
             union_failing: pool(|f| f.union.failing),
             frames,
-        })
-    }
-
-    /// Calls `each` on every frame index below `count`, on as many threads as
-    /// a render draws on (`--threads`, D90), and returns the results in frame
-    /// order, or the first frame's error. Each thread enters the caller's
-    /// tracing dispatcher, so its steps are timed and logged with the caller's.
-    pub(crate) fn each_frame<T: Send>(
-        &self,
-        count: usize,
-        each: &(dyn Fn(usize) -> Result<T> + Sync),
-    ) -> Result<Vec<T>> {
-        let threads = crate::session::threads();
-        let indices: Vec<usize> = (0..count).collect();
-        let chunk = indices.len().div_ceil(threads).max(1);
-        // The default dispatcher is per thread: a scoped one (a test's, or
-        // the CLI's `--timings`) does not reach spawned threads by itself.
-        let dispatch = &tracing::dispatcher::get_default(Clone::clone);
-        let results: Vec<Vec<(usize, Result<T>)>> = thread::scope(|scope| {
-            let handles: Vec<_> = indices
-                .chunks(chunk)
-                .map(|part| {
-                    scope.spawn(move || {
-                        tracing::dispatcher::with_default(dispatch, || {
-                            part.iter().map(|&i| (i, each(i))).collect::<Vec<_>>()
-                        })
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|handle| handle.join().expect("a diff thread does not panic"))
-                .collect()
-        });
-        let mut ordered: Vec<(usize, Result<T>)> = results.into_iter().flatten().collect();
-        ordered.sort_by_key(|(i, _)| *i);
-        ordered.into_iter().map(|(_, result)| result).collect()
-    }
-
-    /// Where the scene draws at `time` seconds, and where `shown` draws
-    /// then, if given: each its display list drawn bare, once.
-    pub(crate) fn masks(&self, shown: Option<&Session>, time: f64) -> Result<Masks> {
-        let frame = time * self.scene().root.fps;
-        Ok(Masks {
-            coverage: self.coverage(self.display_list(frame)?)?,
-            shown: shown
-                .map(|session| self.coverage(session.display_list(frame)?))
-                .transpose()?,
-        })
-    }
-
-    /// Reference frame `index`, read once, and the scene drawn at `time`
-    /// seconds, once, with the frame's `masks` from the coverage pass.
-    pub(crate) fn pair(
-        &self,
-        options: &DiffOptions,
-        time: f64,
-        index: usize,
-        masks: Masks,
-    ) -> Result<Pair> {
-        let path = &options.frames[index];
-        let bytes = fs::read(path).map_err(|e| Diagnostic::io("read", path, &e))?;
-        let reference = Image::from_png(&bytes).map_err(|d| d.at(path.display().to_string()))?;
-        let (width, height) = self.canvas()?;
-        if (reference.width(), reference.height()) != (width, height) {
-            return Err(Diagnostic::new(
-                Kind::Invalid,
-                format!(
-                    "reference frame {} is {}x{}, the scene {width}x{height}",
-                    path.display(),
-                    reference.width(),
-                    reference.height()
-                ),
-            )
-            .expected("reference frames of the scene's size"));
-        }
-        let list = self.display_list(time * self.scene().root.fps)?;
-        let Masks { coverage, shown } = masks;
-        Ok(Pair {
-            ours: self.draw_reference(&list, RenderOptions::default())?,
-            coverage,
-            shown,
-            reference,
-        })
-    }
-
-    /// Whether `list` draws each pixel of the canvas, before its background.
-    fn coverage(&self, list: Frame) -> Result<Vec<bool>> {
-        let bare = Frame {
-            background: None,
-            ..list
         };
-        Ok(self
-            .draw_reference(&bare, RenderOptions::default())?
-            .pixels()
-            .chunks_exact(4)
-            .map(|p| p[3] > 0)
-            .collect())
+        Ok(RecordedDiff {
+            diff,
+            frames: (options.record.as_ref()).map(|_| records.into_iter().flatten().collect()),
+        })
     }
 }
 
@@ -544,4 +495,4 @@ fn write_error_image(
 
 #[cfg(test)]
 #[path = "../tests/unit/diff.rs"]
-mod tests;
+pub(crate) mod tests;

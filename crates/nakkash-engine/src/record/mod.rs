@@ -22,14 +22,18 @@
 //!
 //! The record sits after the fidelity measure's draws: a run that records
 //! writes what it drew, and a run that reuses reads it back in place of a
-//! draw, then measures as always.
+//! draw, then measures as always. A frame is read in place of its draw only
+//! when the runner vouches for it, and the runner, the record and the run
+//! agree on what it draws ([`Reusing::frame`]).
 
 mod files;
 mod pixels;
+mod reuse;
 mod sample;
 mod types;
 
-pub use pixels::{mask_hash, pixels_hash, read_frame, write_frame};
+pub use pixels::{mask_hash, pixels_hash, read_frame, read_masks, read_ours, write_frame};
+pub use reuse::{Identities, Reuse, ReuseSchema, Reusing, SampleReuse, begin_recording};
 pub use sample::{RECORD, begin_sample, read_sample, write_sample};
 pub use types::{Build, Drawn, FrameRecord, Hex128, Platform, SampleRecord, Schema, Times};
 
