@@ -3,5 +3,6 @@ source: crates/nakkash-engine/src/record/../../tests/unit/record/quota.rs
 expression: text
 ---
 the file system of `<scratch>` holds <free> bytes free, fewer than the records' cap of 18446744073709551615 bytes; expected a record cap that fits in the free space of the records' file system
+cannot tell how many bytes are free on the file system of `<scratch>`; expected a record cap that fits in the free space of the records' file system
 writing `<scratch>/f0000.cov` would take the records past their cap of 100 bytes, with 0 taken; expected a larger record cap, or fewer samples recorded at once
 the records reached their cap of 100 bytes, and nothing more is recorded; expected a larger record cap, or fewer samples recorded at once

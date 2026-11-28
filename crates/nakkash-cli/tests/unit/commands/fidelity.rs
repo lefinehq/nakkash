@@ -23,6 +23,7 @@ fn a_cap_is_read_in_gibibytes(#[case] text: &str, #[case] bytes: u64) {
 #[case::infinite("inf")]
 #[case::a_word("big")]
 #[case::with_a_unit("8GiB")]
+#[case::rounds_to_nothing("1e-12")]
 fn a_cap_that_is_not_a_positive_size_is_refused(#[case] text: &str) {
     assert_eq!(
         text.parse::<RecordCap>().unwrap_err(),

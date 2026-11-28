@@ -6,6 +6,9 @@ use pretty_assertions::assert_eq;
 
 use super::*;
 use crate::record::tests::{room, scratch};
+use crate::record::{
+    Build, Hex128, Platform, RECORD, SampleRecord, Schema, read_sample, write_sample,
+};
 use nakkash_format::Kind;
 
 /// A replay of three frames at awkward times, one layer ignored.
@@ -95,4 +98,71 @@ fn a_recording_begins_without_the_replay_of_the_one_before() {
         assert!(!dir.join(gone).exists(), "{gone}");
     }
     assert!(dir.join("notes.txt").exists());
+}
+
+/// Writes into `dir` a replay, a scene and a record naming both, as a
+/// recording does.
+fn recorded(dir: &std::path::Path) {
+    let quota = room();
+    let scene = write_scene(dir, "{\"nakkash\":1}\n", &quota).unwrap();
+    let replay = replay().write(dir, &quota).unwrap();
+    let record = SampleRecord {
+        schema: Schema::V1,
+        sample: "m001".to_owned(),
+        platform: Platform::current(),
+        build: Build {
+            commit: None,
+            tree: None,
+            profile: "test".to_owned(),
+        },
+        entry: Hex128(0),
+        scene,
+        replay,
+        frames: Vec::new(),
+    };
+    write_sample(dir, &record, &quota).unwrap();
+}
+
+#[test]
+fn a_recorded_sample_opens_with_the_files_its_record_names() {
+    let dir = scratch("replay-open");
+    recorded(&dir);
+    let opened = open_replay(&dir).unwrap();
+    assert_eq!(opened.replay, replay());
+    assert_eq!(opened.scene, "{\"nakkash\":1}\n");
+    assert_eq!(opened.record, read_sample(&dir).unwrap());
+}
+
+/// A scene or replay another run wrote over the recorded one, or one
+/// beside no record, is refused, never drawn.
+#[test]
+fn a_scene_or_replay_its_record_does_not_name_is_refused() {
+    let dir = scratch("replay-other");
+    let error = |dir: &std::path::Path| open_replay(dir).unwrap_err();
+    recorded(&dir);
+    std::fs::write(dir.join(SCENE), "{\"nakkash\":1,\"bg\":\"#000\"}\n").unwrap();
+    let scene = error(&dir);
+    recorded(&dir);
+    let mut other = replay();
+    other.times[1] = 0.5;
+    other.write(&dir, &room()).unwrap();
+    let replayed = error(&dir);
+    for refused in [&scene, &replayed] {
+        assert_eq!(refused.kind, Kind::Invalid, "{refused}");
+        assert!(refused.message.contains("its record names"), "{refused}");
+    }
+    assert!(
+        scene
+            .to_string()
+            .starts_with(&dir.join(SCENE).display().to_string())
+    );
+    assert!(
+        replayed
+            .to_string()
+            .starts_with(&dir.join(REPLAY).display().to_string())
+    );
+    // Without its record, a folder is not a recorded sample.
+    recorded(&dir);
+    std::fs::remove_file(dir.join(RECORD)).unwrap();
+    assert_eq!(error(&dir).kind, Kind::Io);
 }

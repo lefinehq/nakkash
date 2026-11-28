@@ -72,6 +72,75 @@ fn frames_refuses_an_index_past_the_sample() {
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(stdout(&out), "");
     insta::assert_snapshot!(stderr(&out));
+    // An index named twice is drawn once.
+    let out = nakkash(&["frames", arg(&records.join("star")), "--frames", "1,1"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out).lines().count(), 1);
+}
+
+/// A list that is not indices is a usage error, before anything is read.
+#[rstest]
+#[case::an_empty_item("0,,3")]
+#[case::a_word("x")]
+#[case::nothing("")]
+#[case::negative("-1")]
+fn frames_refuses_a_list_that_is_not_indices(#[case] list: &str) {
+    let out = nakkash(&["frames", "no-such-sample", "--frames", list]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(stdout(&out), "");
+    let err = stderr(&out);
+    assert!(
+        err.starts_with("error: ") && err.contains("--frames"),
+        "{err}"
+    );
+}
+
+/// `text` with the first hash after each `marker` written as `name`.
+fn redacted(text: &str, marker: &str, name: &str) -> String {
+    match text.find(marker) {
+        Some(at) => {
+            let start = at + marker.len();
+            format!("{}{name}{}", &text[..start], &text[start + 32..])
+        }
+        None => text.to_owned(),
+    }
+}
+
+/// The folder's scene and replay are read only against its record: a
+/// scene a later run wrote over the recorded one is refused, naming the
+/// file, and so is a folder whose record is gone; nothing is drawn.
+#[test]
+fn frames_refuses_files_its_record_does_not_name() {
+    let records = recorded(&scratch("frames-unnamed"));
+    let folder = records.join("star");
+    let scene = folder.join("scene.json");
+    let text = std::fs::read_to_string(&scene).unwrap();
+    std::fs::write(&scene, text.replacen('{', "{\"bg\":\"#000000\",", 1)).unwrap();
+    let out = nakkash(&["frames", arg(&folder), "--frames", "0"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(stdout(&out), "");
+    let err = stderr(&out).replace(&records.display().to_string(), "<records>");
+    let err = redacted(
+        &redacted(&err, "hashes to ", "<found>"),
+        "not to the ",
+        "<recorded>",
+    );
+    insta::assert_snapshot!(err);
+    std::fs::write(&scene, text).unwrap();
+    assert!(
+        nakkash(&["frames", arg(&folder), "--frames", "0"])
+            .status
+            .success()
+    );
+    std::fs::remove_file(folder.join("record.json")).unwrap();
+    let out = nakkash(&["frames", arg(&folder), "--frames", "0"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(stdout(&out), "");
+    let err = stderr(&out);
+    assert!(
+        err.starts_with("error: cannot read `") && err.contains("record.json"),
+        "{err}"
+    );
 }
 
 /// A frame is drawn as its fidelity run drew it: on the CPU, at precise
@@ -89,7 +158,7 @@ fn frames_draws_only_as_the_reference_does(#[case] name: &str, #[case] extra: &[
 }
 
 /// A folder without a recorded sample's files is an I/O error naming the
-/// file it lacks.
+/// record it lacks.
 #[test]
 fn frames_needs_a_recorded_sample() {
     let dir = scratch("frames-empty");
@@ -97,5 +166,5 @@ fn frames_needs_a_recorded_sample() {
     assert_eq!(out.status.code(), Some(2));
     let err = stderr(&out);
     assert!(err.starts_with("error: cannot read `"), "{err}");
-    assert!(err.contains("sample.json"), "{err}");
+    assert!(err.contains("record.json"), "{err}");
 }

@@ -15,6 +15,8 @@ expression: json
     "profile": "release"
   },
   "entry": "0000000000000000000000000000feed",
+  "scene": "000000000000000000000000000005ce",
+  "replay": "000000000000000000000000000007e9",
   "frames": [
     {
       "index": 0,

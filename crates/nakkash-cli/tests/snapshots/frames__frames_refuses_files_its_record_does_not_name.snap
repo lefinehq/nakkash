@@ -1,0 +1,5 @@
+---
+source: crates/nakkash-cli/tests/frames.rs
+expression: err
+---
+error: <records>/star/scene.json: the file hashes to <found>, not to the <recorded> its record names; expected the file the sample was recorded with, as its record names it; record the sample again

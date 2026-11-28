@@ -67,6 +67,8 @@ fn record() -> SampleRecord {
             profile: "release".to_owned(),
         },
         entry: Hex128(0xfeed),
+        scene: Hex128(0x5ce),
+        replay: Hex128(0x7e9),
         frames: vec![
             frame(0, 0.0123456789012345, true),
             frame(1, 0.1 + 0.2, false),

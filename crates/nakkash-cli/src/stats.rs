@@ -1,5 +1,6 @@
 //! `--stats`: what a command cost the machine ([D90]), printed at its end,
-//! and how many fidelity frames it drew and reused from a record.
+//! and how many compared frames (a diff's, a fidelity run's, `frames`') it
+//! drew and reused from a record.
 //!
 //! [D90]: https://github.com/lefinehq/nakkash/blob/main/docs/design/decisions.md#d90-a-frame-is-drawn-from-a-plan-that-knows-what-each-drawing-is-under-one-memory-budget
 
@@ -71,7 +72,7 @@ impl Start {
                 nakkash_engine::frames_copied(),
             ),
             format!(
-                "stats: fidelity: frames drawn {}, reused from a record {}",
+                "stats: compared frames: drawn {}, reused from a record {}",
                 frames.drawn, frames.read
             ),
             format!("stats: swap: {} major faults; {swap}", usage.major_faults),

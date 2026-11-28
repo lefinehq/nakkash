@@ -48,25 +48,12 @@ impl Quota {
     pub fn within(dir: &Path, cap: u64) -> Result<Quota> {
         let absolute = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
         let holder = absolute.ancestors().find(|folder| folder.is_dir());
-        let free = holder.and_then(nakkash_machine::free_space);
-        let shown = dir.display();
-        let short = match free {
-            Some(free) if free >= cap => None,
-            Some(free) => Some(format!(
-                "the file system of `{shown}` holds {free} bytes free, fewer than the records' cap of {cap} bytes"
-            )),
-            None => Some(format!(
-                "cannot tell how many bytes are free on the file system of `{shown}`"
-            )),
-        };
-        match short {
-            Some(message) => Err(Diagnostic::new(Kind::Io, message).expected(FITS)),
-            None => Ok(Quota {
-                cap,
-                taken: AtomicU64::new(0),
-                spent: AtomicBool::new(false),
-            }),
-        }
+        fits(holder.and_then(nakkash_machine::free_space), cap, dir)?;
+        Ok(Quota {
+            cap,
+            taken: AtomicU64::new(0),
+            spent: AtomicBool::new(false),
+        })
     }
 
     /// The most the records may take, in bytes.
@@ -121,6 +108,29 @@ impl Quota {
                 .expected(LARGER))
             }
         }
+    }
+}
+
+/// Refuses a cap of `cap` bytes for records under `dir`, whose file system
+/// has `free` bytes free, when it does not fit, or when the free space is
+/// not known: a recording never risks filling the disk.
+///
+/// # Errors
+/// An I/O diagnostic naming the folder.
+fn fits(free: Option<u64>, cap: u64, dir: &Path) -> Result<()> {
+    let shown = dir.display();
+    let short = match free {
+        Some(free) if free >= cap => None,
+        Some(free) => Some(format!(
+            "the file system of `{shown}` holds {free} bytes free, fewer than the records' cap of {cap} bytes"
+        )),
+        None => Some(format!(
+            "cannot tell how many bytes are free on the file system of `{shown}`"
+        )),
+    };
+    match short {
+        Some(message) => Err(Diagnostic::new(Kind::Io, message).expected(FITS)),
+        None => Ok(()),
     }
 }
 

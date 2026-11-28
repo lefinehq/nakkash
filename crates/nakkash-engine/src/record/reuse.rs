@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use nakkash_format::{Diagnostic, Kind, Place, Result};
 use serde::{Deserialize, Serialize};
@@ -349,13 +349,52 @@ fn refuse_same_folder(dir: &Path, reused: Option<&Path>) -> Result<()> {
     }
 }
 
-/// Whether `a` and `b` are the same folder: both exist and resolve to one
-/// path.
+/// Refuses to record into `dir` when it is `work`, the sample's work
+/// folder, under any spelling of its path, made or not: every fidelity run
+/// writes its scene there, over the record's.
+///
+/// # Errors
+/// An invalid diagnostic naming the folder.
+pub fn refuse_work_folder(dir: &Path, work: &Path) -> Result<()> {
+    match same_folder(dir, work) {
+        true => Err(Diagnostic::new(
+            Kind::Invalid,
+            format!(
+                "the run would record into {}, the sample's work folder, where every run writes its scene",
+                dir.display()
+            ),
+        )
+        .expected("a record folder apart from the work folder (`--work`)")),
+        false => Ok(()),
+    }
+}
+
+/// Whether `a` and `b` are the same folder, made or not: each resolved
+/// through the part of it that exists, links and `..` included, and the
+/// names below it as written.
 fn same_folder(a: &Path, b: &Path) -> bool {
-    matches!(
-        (fs::canonicalize(a), fs::canonicalize(b)),
-        (Ok(a), Ok(b)) if a == b
-    )
+    matches!((resolved(a), resolved(b)), (Some(a), Some(b)) if a == b)
+}
+
+/// `path` from the root, resolved part by part: each part that exists to
+/// the folder it is, links followed, so a `..` after it leaves the folder
+/// it really is in; a part that does not exist, which cannot be a link, as
+/// written.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    let mut real = PathBuf::new();
+    for part in std::path::absolute(path).ok()?.components() {
+        match part {
+            Component::ParentDir => {
+                real.pop();
+            }
+            Component::CurDir => {}
+            part => real.push(part),
+        }
+        if let Ok(canonical) = fs::canonicalize(&real) {
+            real = canonical;
+        }
+    }
+    Some(real)
 }
 
 #[cfg(test)]

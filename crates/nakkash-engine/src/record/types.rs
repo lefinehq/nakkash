@@ -191,6 +191,13 @@ pub struct SampleRecord {
     /// The content hash of the sample's manifest entry as serialised: a
     /// changed entry is a changed sample.
     pub entry: Hex128,
+    /// The content hash of the bytes of the sample's `scene.json`
+    /// ([`write_scene`](super::write_scene)): the scene `nakkash frames`
+    /// draws its frames again from, refused when it is not this one.
+    pub scene: Hex128,
+    /// The content hash of the bytes of the sample's `sample.json`
+    /// ([`Replay::write`](super::Replay::write)), refused as `scene` is.
+    pub replay: Hex128,
     /// Every compared frame, in order.
     pub frames: Vec<FrameRecord>,
 }

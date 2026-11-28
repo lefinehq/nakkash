@@ -867,6 +867,19 @@ fn a_run_stops_recording_at_its_cap() {
     );
 }
 
+/// A run never records into the work folder, which every run writes its
+/// scene into: refused before the recording begins.
+#[test]
+fn a_run_never_records_into_its_work_folder() {
+    let dir = scratch("into-work");
+    let work = dir.join("work");
+    let sample = star_sample(&dir);
+    let error = super::measure(&sample, &work, &recording(&work)).unwrap_err();
+    assert_eq!(error.kind, Kind::Invalid, "{error}");
+    assert!(error.message.contains("work folder"), "{error}");
+    assert!(!work.exists(), "nothing written");
+}
+
 /// A changed manifest entry is a changed sample: its record is not reused
 /// even where every frame draws the same lists, and it is measured afresh.
 #[test]

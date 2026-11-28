@@ -24,8 +24,9 @@ use nakkash_engine::{
 
 use crate::build_identity;
 
-/// The most a run's records may take, as `--record-cap` takes it: a
-/// positive number of gibibytes, such as `8` or `0.5`.
+/// The most a run may write into its records, as `--record-cap` takes it:
+/// a positive number of gibibytes, such as `8` or `0.5`, of at least one
+/// byte.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RecordCap {
     /// The cap in bytes, rounded down.
@@ -54,7 +55,10 @@ impl FromStr for RecordCap {
             reason = "a positive size, rounded down to whole bytes and capped at the most a u64 holds"
         )]
         let bytes = (gib * f64::from(1u32 << 30)) as u64;
-        Ok(RecordCap { bytes })
+        match bytes {
+            0 => Err(not_a_size()),
+            bytes => Ok(RecordCap { bytes }),
+        }
     }
 }
 

@@ -23,7 +23,7 @@ const SAMPLES: [&str; 2] = ["star", "hidden"];
 /// how many it reused from a record.
 fn frames_line(err: &str) -> &str {
     err.lines()
-        .find(|line| line.starts_with("stats: fidelity:"))
+        .find(|line| line.starts_with("stats: compared frames:"))
         .unwrap_or_else(|| panic!("no frames line in {err}"))
 }
 
@@ -86,7 +86,7 @@ fn fidelity_records_then_reuses_with_the_same_ledger() {
     );
     assert_eq!(
         frames_line(&err),
-        "stats: fidelity: frames drawn 6, reused from a record 0"
+        "stats: compared frames: drawn 6, reused from a record 0"
     );
     for id in SAMPLES {
         let folder = records.join(id);
@@ -118,7 +118,7 @@ fn fidelity_records_then_reuses_with_the_same_ledger() {
     let (reused, err) = run("reused.json", &["--reuse", arg(&list)]);
     assert_eq!(
         frames_line(&err),
-        "stats: fidelity: frames drawn 0, reused from a record 6"
+        "stats: compared frames: drawn 0, reused from a record 6"
     );
     assert_eq!(
         String::from_utf8(reused).unwrap(),
@@ -128,7 +128,7 @@ fn fidelity_records_then_reuses_with_the_same_ledger() {
     let (plain, err) = run("plain.json", &[]);
     assert_eq!(
         frames_line(&err),
-        "stats: fidelity: frames drawn 6, reused from a record 0"
+        "stats: compared frames: drawn 6, reused from a record 0"
     );
     assert_eq!(plain, full);
 }
@@ -187,18 +187,62 @@ fn fidelity_stops_recording_at_its_cap() {
 }
 
 /// Recording is opt-in and always capped, and draws on the CPU at precise
-/// quality alone: what else is asked is a usage error.
+/// quality alone: what else is asked is a usage error, which names what it
+/// refuses.
 #[rstest]
-#[case::record_without_a_cap(&["--record", "r"])]
-#[case::cap_without_a_record(&["--record-cap", "1"])]
-#[case::a_cap_of_nothing(&["--record", "r", "--record-cap", "0"])]
-#[case::a_cap_that_is_not_a_size(&["--record", "r", "--record-cap", "big"])]
-#[case::on_the_gpu(&["--record", "r", "--record-cap", "1", "--gpu"])]
-#[case::reuse_at_fast_quality(&["--reuse", "reuse.json", "--quality", "fast"])]
-fn fidelity_refuses_what_it_cannot_record(#[case] extra: &[&str]) {
+#[case::record_without_a_cap(&["--record", "r"], "--record-cap <GIB>")]
+#[case::cap_without_a_record(&["--record-cap", "1"], "--record <DIR>")]
+#[case::a_cap_of_nothing(
+    &["--record", "r", "--record-cap", "0"],
+    "`0` is not a positive number of gibibytes"
+)]
+#[case::a_cap_that_rounds_to_nothing(
+    &["--record", "r", "--record-cap", "1e-12"],
+    "`1e-12` is not a positive number of gibibytes"
+)]
+#[case::a_cap_that_is_not_a_size(
+    &["--record", "r", "--record-cap", "big"],
+    "`big` is not a positive number of gibibytes"
+)]
+#[case::on_the_gpu(&["--record", "r", "--record-cap", "1", "--gpu"], "unexpected argument '--gpu'")]
+#[case::reuse_at_fast_quality(
+    &["--reuse", "reuse.json", "--quality", "fast"],
+    "unexpected argument '--quality'"
+)]
+fn fidelity_refuses_what_it_cannot_record(#[case] extra: &[&str], #[case] names: &str) {
     let mut args = vec!["fidelity", "samples.json"];
     args.extend_from_slice(extra);
     let out = nakkash(&args);
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    assert!(stderr(&out).starts_with("error: "), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(2), "{err}");
+    assert!(err.starts_with("error: ") && err.contains(names), "{err}");
+}
+
+/// A record is never kept in the work folder, which every run writes its
+/// scene into: each sample is refused before anything is written.
+#[test]
+fn fidelity_refuses_to_record_into_its_work_folder() {
+    let dir = scratch("fidelity-into-work");
+    let manifest = star_manifest(&dir);
+    let out = nakkash(&[
+        "fidelity",
+        arg(&manifest),
+        "--work",
+        arg(&dir),
+        "--record",
+        arg(&dir),
+        "--record-cap",
+        "1",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let text = stdout(&out);
+    for id in SAMPLES {
+        assert!(
+            text.contains(&format!(
+                "{id}: not measured: sample `{id}`: the run would record into "
+            )),
+            "{text}"
+        );
+        assert!(!dir.join(id).exists(), "{id}: nothing written");
+    }
 }

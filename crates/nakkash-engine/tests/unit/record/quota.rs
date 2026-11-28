@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use pretty_assertions::assert_eq;
+use rstest::rstest;
 
 use super::*;
 use crate::record::tests::scratch;
@@ -22,6 +23,25 @@ fn a_cap_must_fit_in_the_free_space() {
     assert_eq!((quota.cap(), quota.taken()), (1000, 0));
     // From here too: a relative folder is measured from the working one.
     assert!(Quota::within(Path::new("records-not-made"), 1000).is_ok());
+}
+
+/// The cap fits when the file system has at least as many bytes free, and
+/// is refused when it has fewer, or does not say how many.
+#[rstest]
+#[case::room(Some(1000), 1000, true)]
+#[case::more_room(Some(5000), 1000, true)]
+#[case::short(Some(999), 1000, false)]
+#[case::unknown(None, 1, false)]
+fn a_cap_fits_only_in_known_free_space(
+    #[case] free: Option<u64>,
+    #[case] cap: u64,
+    #[case] fit: bool,
+) {
+    let result = fits(free, cap, Path::new("records"));
+    assert_eq!(result.is_ok(), fit, "{result:?}");
+    if let Err(error) = result {
+        assert_eq!(error.kind, Kind::Io, "{error}");
+    }
 }
 
 #[test]
@@ -71,6 +91,7 @@ fn every_quota_error_message() {
     let past = quota.take(&dir.join("f0000.cov"), 101).unwrap_err();
     let text = [
         Quota::within(&dir, u64::MAX).unwrap_err().to_string(),
+        fits(None, 100, &dir).unwrap_err().to_string(),
         past.to_string(),
         quota.check().unwrap_err().to_string(),
     ]

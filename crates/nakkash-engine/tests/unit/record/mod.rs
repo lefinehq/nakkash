@@ -90,6 +90,8 @@ fn disagreeing(dir: &Path, change: impl FnOnce(&mut FrameRecord)) -> String {
             profile: "debug".to_owned(),
         },
         entry: Hex128(0),
+        scene: Hex128(0x5ce),
+        replay: Hex128(0x7e9),
         frames: vec![frame],
     };
     write_sample(dir, &record, &room()).unwrap();

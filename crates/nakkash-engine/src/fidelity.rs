@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use crate::diff::{Floor, FrameDiff, file_name};
 use crate::record::{
     Build, Hex128, Platform, Quota, Reuse, Reusing, SampleRecord, Schema, Target, begin_recording,
-    write_sample, write_scene,
+    refuse_work_folder, write_sample, write_scene,
 };
 use crate::{
     DiffOptions, Session, import_scene, measure_layouts, substitute_fonts, write_document,
@@ -492,6 +492,9 @@ pub fn measure(sample: &Sample, work: &Path, options: &MeasureOptions) -> Result
             // the sample keeps the record it had.
             record.quota.check().map_err(under)?;
             let dir = record.dir.join(&sample.id);
+            // The work folder is written by every run, so a record there
+            // would be written over.
+            refuse_work_folder(&dir, &work.join(&sample.id)).map_err(under)?;
             begin_recording(&dir, listed.map(|listed| listed.dir.as_path())).map_err(under)?;
             Some((dir, record))
         }
@@ -593,15 +596,17 @@ pub fn measure(sample: &Sample, work: &Path, options: &MeasureOptions) -> Result
         // What draws its frames again from the folder alone, then the
         // record last, which names the recording whole.
         let quota = &recording.quota;
-        write_scene(&dir, &text, quota).map_err(under)?;
+        let scene = write_scene(&dir, &text, quota).map_err(under)?;
         let replay = diff_options.replay(&session).map_err(under)?;
-        replay.write(&dir, quota).map_err(under)?;
+        let replay = replay.write(&dir, quota).map_err(under)?;
         let record = SampleRecord {
             schema: Schema::V1,
             sample: sample.id.clone(),
             platform: Platform::current(),
             build: recording.build.clone(),
             entry,
+            scene,
+            replay,
             frames,
         };
         write_sample(&dir, &record, quota).map_err(under)?;

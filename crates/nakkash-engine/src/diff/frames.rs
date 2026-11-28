@@ -45,9 +45,9 @@ pub struct FrameCounts {
     pub read: u64,
 }
 
-/// How many frames fidelity diffs and replays drew over the process, and
-/// how many they read from a record instead: what `--stats` says of a run
-/// that reuses.
+/// How many compared frames diffs and replays drew over the process (each
+/// `nakkash diff`, `fidelity` and `frames` frame), and how many they read
+/// from a record instead: what `--stats` says of a run that reuses.
 pub fn frame_counts() -> FrameCounts {
     FrameCounts {
         drawn: DRAWN.load(Ordering::Relaxed),

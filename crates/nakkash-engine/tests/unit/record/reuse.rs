@@ -74,6 +74,8 @@ fn record() -> SampleRecord {
         platform: Platform::current(),
         build: build(),
         entry: Hex128(0xe),
+        scene: Hex128(0x5ce),
+        replay: Hex128(0x7e9),
         frames: (0..3).map(frame).collect(),
     }
 }
@@ -468,4 +470,38 @@ fn every_reuse_error_message() {
         .replace(&read_pinned(&again).unwrap().1.to_string(), "<hash now>")
         .replace(&pinned.record.to_string(), "<hash judged>");
     insta::assert_snapshot!(text);
+}
+
+/// A sample's record folder is never its work folder, under any spelling,
+/// made or not; any other folder is.
+#[test]
+fn a_record_is_never_kept_in_the_work_folder() {
+    let dir = scratch("reuse-work");
+    let work = dir.join("work").join("m001");
+    let refused = [
+        work.clone(),
+        dir.join("work/../work/m001"),
+        dir.join("work/./m001"),
+    ];
+    for spelling in &refused {
+        let error = refuse_work_folder(spelling, &work).unwrap_err();
+        assert_eq!(error.kind, Kind::Invalid, "{error}");
+    }
+    fs::create_dir_all(&work).unwrap();
+    for spelling in &refused {
+        assert!(
+            refuse_work_folder(spelling, &work).is_err(),
+            "{}",
+            spelling.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(dir.join("work"), &link).unwrap();
+        assert!(refuse_work_folder(&link.join("m001"), &work).is_err());
+    }
+    refuse_work_folder(&dir.join("records/m001"), &work).unwrap();
+    refuse_work_folder(&dir.join("work/m002"), &work).unwrap();
+    refuse_work_folder(&dir.join("records/../m001"), &work).unwrap();
 }

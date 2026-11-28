@@ -69,6 +69,8 @@ fn record(scene: &Session, opts: &DiffOptions, dir: &Path) -> (Diff, Vec<FrameRe
         platform: Platform::current(),
         build: build(),
         entry: Hex128(0),
+        scene: Hex128(0x5ce),
+        replay: Hex128(0x7e9),
         frames: frames.clone(),
     };
     write_sample(dir, &sample, &room()).unwrap();

@@ -3,6 +3,10 @@
 //! order: the content hashes of our pixels, the coverage and the shown
 //! mask, as the sample's record names them, and how long each draw took.
 //!
+//! The scene and the replay are read only against the sample's record,
+//! which names them by the content hashes of their bytes: files a later
+//! run wrote over them, or ones beside no record, are refused.
+//!
 //! A frame is drawn as its fidelity run drew it, through the same draws
 //! ([`Replayer::draw_frame`](nakkash_engine::Replayer::draw_frame)): on
 //! the CPU at precise quality, so its hashes equal its record's bit for
@@ -13,7 +17,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::ExitCode;
 
-use nakkash_engine::record::{Hex128, Replay, SCENE, Times, mask_hash, pixels_hash};
+use nakkash_engine::record::{Hex128, Replayed, SCENE, Times, mask_hash, open_replay, pixels_hash};
 use nakkash_engine::{Diagnostic, Kind, Quality, Result, Session};
 use serde::Serialize;
 
@@ -43,22 +47,24 @@ struct Line {
 }
 
 /// Draws the frames `args` lists of the sample recorded in `sample`, and
-/// prints a line for each. Every index is checked before any frame is
-/// drawn.
+/// prints a line for each. The folder's `sample.json` and `scene.json` are
+/// read only against its record, and every index is checked, before any
+/// frame is drawn.
 ///
 /// # Errors
-/// An invalid diagnostic when asked for the GPU or fast quality; an I/O or
-/// invalid one when the folder's `sample.json` or `scene.json` cannot be
-/// read; an out-of-range one for an index past the sample's frames; or as
-/// [`Session::replayer`] and the draws.
+/// An invalid diagnostic when asked for the GPU or fast quality; an I/O one
+/// when the folder holds no record or a file cannot be read; an invalid one
+/// when `sample.json` or `scene.json` is not the file its record names
+/// ([`open_replay`]); an out-of-range one for an index past the sample's
+/// frames; or as [`Session::replayer`] and the draws.
 pub fn run(sample: &Path, args: &Args<'_>) -> Result<ExitCode> {
     refuse_other_drawing(args.quality, args.gpu)?;
-    let replay = Replay::read(sample)?;
+    let Replayed { replay, scene, .. } = open_replay(sample)?;
     let indices: BTreeSet<usize> = args.frames.iter().copied().collect();
     for &index in &indices {
         replay.time(index)?;
     }
-    let session = Session::open(sample.join(SCENE))?;
+    let session = Session::open_text(sample.join(SCENE), scene)?;
     let replayer = session.replayer(&replay)?;
     for index in indices {
         let (drawn, ms) = replayer.draw_frame(index)?;
