@@ -47,6 +47,10 @@ lz4_flex.workspace = true
 # The record's hexadecimal hashes.
 winnow.workspace = true
 
+[build-dependencies]
+# The build script hashes the code generation with the one content hash.
+nakkash-hash = { path = "../nakkash-hash" }
+
 [dev-dependencies]
 # The import tests bake.
 nakkash-import = { path = "../nakkash-import", features = ["bake"] }

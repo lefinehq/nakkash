@@ -32,6 +32,20 @@ fn cgroup_limit() -> Option<u64> {
     parse::limit(&v1).filter(|&bytes| bytes < 1 << 60)
 }
 
+/// The version of the GNU C library the process runs with, which holds the
+/// maths functions, and the kernel's release: `glibc 2.39, Linux
+/// 6.8.0-49-generic`. `None` with another C library.
+pub(crate) fn system() -> Option<String> {
+    #[cfg(target_env = "gnu")]
+    {
+        let glibc = crate::unix::glibc_version()?;
+        let kernel = crate::unix::kernel_release()?;
+        parse::system_name([("glibc", &glibc), ("Linux", &kernel)])
+    }
+    #[cfg(not(target_env = "gnu"))]
+    None
+}
+
 pub(crate) fn memory() -> Option<u64> {
     let total = parse::meminfo_bytes(&fs::read_to_string("/proc/meminfo").ok()?, "MemTotal")?;
     Some(cgroup_limit().map_or(total, |limit| limit.min(total)))

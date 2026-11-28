@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use nakkash_engine::record::{Build, Quota, Reuse};
+use nakkash_engine::record::{Build, Platform, Quota, Reuse};
 use nakkash_engine::{
     Change, Diagnostic, Ledger, Manifest, Measure, MeasureOptions, Recording, Result, Rule, Sample,
     Scoreboard, Verdict, Window,
@@ -91,6 +91,15 @@ fn unidentified(build: &Build) -> Option<&'static str> {
     )
 }
 
+/// Says on stderr, when `platform` does not know its system or code
+/// generation, that the records written on it cannot be reused: an unknown
+/// part matches nothing ([`Platform::unlike`]).
+fn unknown_platform(platform: &Platform) -> Option<String> {
+    platform.unlike(platform).map(|why| {
+        format!("warning: the records this run writes cannot be reused, since this machine is not fully known: {why}")
+    })
+}
+
 /// Measures the samples, prints their numbers, what moved since the
 /// ledger and the score, and writes the ledger when asked. Exits 1 when a sample cannot
 /// be measured, or when a number got worse and the ledger is not being
@@ -114,6 +123,9 @@ pub fn run(args: &Args<'_>) -> Result<ExitCode> {
             let quota = Arc::new(Quota::within(dir, cap.bytes())?);
             let build = build_identity::current();
             if let Some(warning) = unidentified(&build) {
+                eprintln!("{warning}");
+            }
+            if let Some(warning) = unknown_platform(&Platform::current()) {
                 eprintln!("{warning}");
             }
             Some(Recording {

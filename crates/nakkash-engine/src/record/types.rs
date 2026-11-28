@@ -4,6 +4,7 @@
 
 use std::fmt;
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 use nakkash_format::grammar::parse_whole;
 use nakkash_format::{Diagnostic, Result};
@@ -66,7 +67,9 @@ pub enum Schema {
 
 /// The machine a record was drawn on, as far as identities cannot see it:
 /// the same display list may draw other bits on another processor or SIMD
-/// level, so a record is reused only on the platform it names.
+/// level, with another system maths library, or from machine code compiled
+/// by another toolchain or with other flags, so a record is reused only on
+/// the platform it names, every part known and equal ([`Platform::unlike`]).
 ///
 /// Footage a machine cannot decode, or fonts it lacks, already change the
 /// display list, and so the identity, or fail the sample.
@@ -77,22 +80,74 @@ pub struct Platform {
     pub target: String,
     /// The SIMD level native frames are drawn with, such as `neon`.
     pub simd: String,
+    /// The system's version, whose library holds the maths functions the
+    /// rasteriser calls ([`nakkash_machine::system`]), such as `macOS 26.3,
+    /// build 25D125`; none when the system does not say. Required, null or
+    /// not.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub system: Option<String>,
+    /// The hash of the compiler's version and the flags the engine was
+    /// compiled with (the engine's `build/codegen.rs`), as its build script
+    /// named them; none when the compiler could not say. Required, null or
+    /// not.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub codegen: Option<Hex128>,
 }
 
-impl fmt::Display for Platform {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} with {}", self.target, self.simd)
-    }
-}
+/// One part of a platform, as [`Platform::unlike`] compares it: its name
+/// and its value, none when unknown.
+type Part = (&'static str, Option<String>);
 
 impl Platform {
-    /// This machine.
+    /// This machine and build.
     pub fn current() -> Platform {
-        Platform {
-            target: format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
-            simd: nakkash_raster::simd_level().to_owned(),
-        }
+        static CURRENT: OnceLock<Platform> = OnceLock::new();
+        CURRENT
+            .get_or_init(|| Platform {
+                target: format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
+                simd: nakkash_raster::simd_level().to_owned(),
+                system: nakkash_machine::system(),
+                codegen: codegen_from_script(env!("NAKKASH_CODEGEN")),
+            })
+            .clone()
     }
+
+    /// Why a record drawn on this platform cannot stand for a draw on
+    /// `here`: the first part that differs, or that either side does not
+    /// know, since an unknown part matches nothing, not even another
+    /// unknown; none when every part is known and equal.
+    pub fn unlike(&self, here: &Platform) -> Option<String> {
+        let mut parts = self.parts().into_iter().zip(here.parts());
+        parts.find_map(|((name, theirs), (_, ours))| match (theirs, ours) {
+            (Some(theirs), Some(ours)) if theirs == ours => None,
+            (Some(theirs), Some(ours)) => Some(format!(
+                "its {name} is {theirs}, and this machine's is {ours}"
+            )),
+            (None, _) => Some(format!(
+                "its {name} is unknown, and an unknown {name} matches none"
+            )),
+            (Some(_), None) => Some(format!(
+                "this machine's {name} is unknown, and an unknown {name} matches none"
+            )),
+        })
+    }
+
+    /// Every part, in the order [`Platform::unlike`] names them.
+    fn parts(&self) -> [Part; 4] {
+        [
+            ("target", Some(self.target.clone())),
+            ("SIMD level", Some(self.simd.clone())),
+            ("system", self.system.clone()),
+            ("code generation", self.codegen.map(|hash| hash.to_string())),
+        ]
+    }
+}
+
+/// The code generation the build script wrote (`NAKKASH_CODEGEN`): a hash,
+/// or empty when it could not tell. Anything else is unknown too, never a
+/// hash.
+pub(crate) fn codegen_from_script(script: &str) -> Option<Hex128> {
+    script.parse().ok()
 }
 
 /// The build a record was made with, so that both sides of a comparison

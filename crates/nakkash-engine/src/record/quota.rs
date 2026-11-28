@@ -16,9 +16,11 @@ const LARGER: &str = "a larger record cap, or fewer samples recorded at once";
 
 /// How many bytes a run's records may take, and how many they took. Every
 /// file a recording writes takes its bytes first ([`Quota::take`]); once a
-/// write is refused, the quota is spent and refuses every one after it
-/// ([`Quota::check`]), so a run stops recording rather than record some
-/// samples past the point it should have stopped. Threads share one.
+/// write is refused, the sample writing it fails, and the quota is spent
+/// and refuses every one after it ([`Quota::check`]), so the samples after
+/// it are not measured rather than some recorded past the point the run
+/// should have stopped. The records written before it are kept. Threads
+/// share one.
 #[derive(Debug)]
 pub struct Quota {
     /// The most the records may take, in bytes.

@@ -43,6 +43,12 @@ pub mod vary;
 #[path = "../tests/unit/support.rs"]
 mod test_support;
 
+/// The build script's code generation probe, tested with the engine's
+/// tests.
+#[cfg(test)]
+#[path = "../build/codegen.rs"]
+mod codegen;
+
 pub use diff::{
     Diff, DiffOptions, Error as DiffError, Floor, FrameCounts, FrameDiff, Pooled, RecordedDiff,
     Replayer, frame_counts,

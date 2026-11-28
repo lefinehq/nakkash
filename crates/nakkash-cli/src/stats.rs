@@ -1,11 +1,12 @@
 //! `--stats`: what a command cost the machine ([D90]), printed at its end,
-//! and how many compared frames (a diff's, a fidelity run's, `frames`') it
-//! drew and reused from a record.
+//! and, when it compared any, how many compared frames (a diff's, a
+//! fidelity run's, `frames`') it drew and reused from a record.
 //!
 //! [D90]: https://github.com/lefinehq/nakkash/blob/main/docs/design/decisions.md#d90-a-frame-is-drawn-from-a-plan-that-knows-what-each-drawing-is-under-one-memory-budget
 
 use std::time::Instant;
 
+use nakkash_engine::FrameCounts;
 use nakkash_machine::{MIB, Swap};
 
 /// What was true when the command started.
@@ -38,7 +39,7 @@ impl Start {
             Some(bytes) => format!("{bytes} B"),
             None => "unknown".to_owned(),
         };
-        vec![
+        [
             format!(
                 "stats: time: wall {:.2} s, user {:.2} s, system {:.2} s",
                 self.at.elapsed().as_secs_f64(),
@@ -71,12 +72,28 @@ impl Start {
                 nakkash_engine::drawings_reused(),
                 nakkash_engine::frames_copied(),
             ),
-            format!(
-                "stats: compared frames: drawn {}, reused from a record {}",
-                frames.drawn, frames.read
-            ),
+        ]
+        .into_iter()
+        .chain(frames_line(frames))
+        .chain([
             format!("stats: swap: {} major faults; {swap}", usage.major_faults),
             format!("stats: storage: written {written}"),
-        ]
+        ])
+        .collect()
     }
 }
+
+/// The line of the compared frames a command drew and reused from a
+/// record; none for a command that compared none, such as `render`.
+fn frames_line(frames: FrameCounts) -> Option<String> {
+    (frames.drawn + frames.read > 0).then(|| {
+        format!(
+            "stats: compared frames: drawn {}, reused from a record {}",
+            frames.drawn, frames.read
+        )
+    })
+}
+
+#[cfg(test)]
+#[path = "../tests/unit/stats.rs"]
+mod tests;

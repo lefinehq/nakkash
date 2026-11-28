@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::Path;
 
-use nakkash_format::{Address, Diagnostic, Kind, Place, Result};
+use nakkash_format::{Address, Diagnostic, Kind, Result};
 use nakkash_hash::content_hash;
 use serde::{Deserialize, Serialize};
 
@@ -89,11 +89,8 @@ impl Replay {
 
     /// The replay in `bytes`, read from the file at `path`.
     fn parse(path: &Path, bytes: &[u8]) -> Result<Replay> {
-        serde_json::from_slice(bytes).map_err(|e| {
-            Diagnostic::new(Kind::Invalid, e.to_string())
-                .at(Place::Other(path.display().to_string()))
-                .expected(EXPECTED)
-        })
+        serde_json::from_slice(bytes)
+            .map_err(|e| Diagnostic::invalid_file(path, e.to_string()).expected(EXPECTED))
     }
 
     /// Writes this replay as `sample.json` in `dir`, whole, within `quota`;
@@ -105,8 +102,7 @@ impl Replay {
     pub fn write(&self, dir: &Path, quota: &Quota) -> Result<Hex128> {
         let path = dir.join(REPLAY);
         let mut bytes = serde_json::to_vec_pretty(self).map_err(|e| {
-            Diagnostic::new(Kind::Invalid, format!("cannot write the replay: {e}"))
-                .at(Place::Other(path.display().to_string()))
+            Diagnostic::invalid_file(&path, format!("cannot write the replay: {e}"))
         })?;
         bytes.push(b'\n');
         write_whole(&path, &bytes, quota)?;
@@ -154,7 +150,7 @@ pub fn open_replay(dir: &Path) -> Result<Replayed> {
     let replay = Replay::parse(&replay_path, &bytes)?;
     let scene_path = dir.join(SCENE);
     let scene = String::from_utf8(recorded(&scene_path, SCENE_TAG, record.scene)?)
-        .map_err(|e| invalid(&scene_path, e.to_string()))?;
+        .map_err(|e| Diagnostic::invalid_file(&scene_path, e.to_string()).expected(RECORDED))?;
     Ok(Replayed {
         record,
         replay,
@@ -169,19 +165,12 @@ fn recorded(path: &Path, tag: &str, named: Hex128) -> Result<Vec<u8>> {
     let found = Hex128(content_hash(tag, &bytes));
     match found == named {
         true => Ok(bytes),
-        false => Err(invalid(
+        false => Err(Diagnostic::invalid_file(
             path,
             format!("the file hashes to {found}, not to the {named} its record names"),
-        )),
+        )
+        .expected(RECORDED)),
     }
-}
-
-/// An invalid diagnostic at the file at `path`, not the one its record
-/// names.
-fn invalid(path: &Path, message: String) -> Diagnostic {
-    Diagnostic::new(Kind::Invalid, message)
-        .at(Place::Other(path.display().to_string()))
-        .expected(RECORDED)
 }
 
 #[cfg(test)]

@@ -25,7 +25,13 @@
 //! first, so a recording stops at its cap rather than fill the disk.
 //!
 //! Every hash is the one content hash of the rasteriser's identities
-//! (`nakkash_hash`), and covers the frame's size.
+//! (`nakkash_hash`), each tagged by what it hashes. The hashes of pixels
+//! and masks cover the frame's size too; those of the scene, the replay,
+//! the record file and the manifest entry cover their bytes alone.
+//!
+//! A record names the platform it was drawn on ([`Platform`]): the target,
+//! the SIMD level, the system's version and the code generation. A record
+//! is reused only where each is known and equal.
 //!
 //! The record sits after the fidelity measure's draws: a run that records
 //! writes what it drew, and a run that reuses reads it back in place of a

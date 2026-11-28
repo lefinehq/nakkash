@@ -2032,6 +2032,7 @@ name = "nakkash-machine"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "rstest",
 ]
 
 [[package]]

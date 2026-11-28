@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use binrw::{BinRead, BinWrite, binrw};
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use nakkash_format::grammar::parse_whole;
-use nakkash_format::{Diagnostic, Kind, Place, Result};
+use nakkash_format::{Diagnostic, Kind, Result};
 use nakkash_hash::{ContentHasher, content_hash};
 use nakkash_raster::Image;
 use winnow::ascii::digit1;
@@ -132,9 +132,7 @@ impl Reason {
                 Hex128(header)
             ),
         };
-        Diagnostic::new(Kind::Invalid, message)
-            .at(Place::Other(path.display().to_string()))
-            .expected(EXPECTED)
+        Diagnostic::invalid_file(path, message).expected(EXPECTED)
     }
 }
 

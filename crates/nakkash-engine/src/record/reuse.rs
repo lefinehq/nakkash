@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use nakkash_format::{Diagnostic, Kind, Place, Result};
+use nakkash_format::{Diagnostic, Kind, Result};
 use serde::{Deserialize, Serialize};
 
 use super::sample::{RECORD, begin_sample, read_pinned};
@@ -111,7 +111,7 @@ pub struct Reuse {
 }
 
 /// The accepted form of a reuse list.
-const REUSE: &str = r#"a reuse list: {"schema":"nakkash.FidelityReuse.1","platform":{…},"samples":{"m001":{"dir":"records/m001","frames":{"0":{"ours":…,"bare":…,"shown":null}}}}}"#;
+const REUSE: &str = r#"a reuse list: {"schema":"nakkash.FidelityReuse.1","platform":{"target":…,"simd":…,"system":…,"codegen":…},"samples":{"m001":{"dir":"records/m001","record":"<32 hex>","frames":{"0":{"ours":"<32 hex>","bare":"<32 hex>","shown":null}}}}}"#;
 
 impl Reuse {
     /// Reads the reuse list at `path`; a relative record folder in it is
@@ -120,25 +120,17 @@ impl Reuse {
     /// # Errors
     /// An I/O diagnostic when the file cannot be read, or an invalid one,
     /// with its path, when it is not a reuse list of this form or was made
-    /// on another platform.
+    /// for another platform ([`Platform::unlike`]).
     pub fn read(path: &Path) -> Result<Reuse> {
-        let invalid = |message: String, expected: &'static str| {
-            Diagnostic::new(Kind::Invalid, message)
-                .at(Place::Other(path.display().to_string()))
-                .expected(expected)
-        };
         let text = fs::read_to_string(path).map_err(|e| Diagnostic::io("read", path, &e))?;
-        let mut reuse: Reuse =
-            serde_json::from_str(&text).map_err(|e| invalid(e.to_string(), REUSE))?;
-        let here = Platform::current();
-        if reuse.platform != here {
-            return Err(invalid(
-                format!(
-                    "the reuse list was made on {}, and this machine is {here}",
-                    reuse.platform
-                ),
-                "a reuse list made on this platform",
-            ));
+        let mut reuse: Reuse = serde_json::from_str(&text)
+            .map_err(|e| Diagnostic::invalid_file(path, e.to_string()).expected(REUSE))?;
+        if let Some(unlike) = reuse.platform.unlike(&Platform::current()) {
+            return Err(Diagnostic::invalid_file(
+                path,
+                format!("the reuse list was made for another platform: {unlike}"),
+            )
+            .expected("a reuse list made on this platform"));
         }
         let base = path.parent().unwrap_or(Path::new("."));
         for sample in reuse.samples.values_mut() {
@@ -180,15 +172,13 @@ impl Reusing {
     /// path, when it is not the record `reuse` pins, so the runner never
     /// judged it; when the build that made it did not know its commit, so
     /// nothing says what code drew it; or when it was drawn on another
-    /// platform, whose processor may draw the same lists to other bits.
+    /// platform ([`Platform::unlike`]), whose processor, maths library or
+    /// machine code may draw the same lists to other bits, or on one that
+    /// did not know its system or code generation.
     pub fn open(reuse: &SampleReuse) -> Result<Reusing> {
         let (record, pin) = read_pinned(&reuse.dir)?;
-        let here = Platform::current();
-        let refusal = match (
-            pin == reuse.record,
-            record.build.identified(),
-            record.platform == here,
-        ) {
+        let unlike = record.platform.unlike(&Platform::current());
+        let refusal = match (pin == reuse.record, record.build.identified(), unlike) {
             (false, _, _) => Some((
                 format!(
                     "the record hashes to {pin}, not to the {} the reuse list was made from",
@@ -200,17 +190,16 @@ impl Reusing {
                 "the record was made by a build that does not know its commit".to_owned(),
                 REUSABLE,
             )),
-            (true, true, false) => Some((
-                format!(
-                    "the record was drawn on {}, and this machine is {here}",
-                    record.platform
-                ),
+            (true, true, Some(unlike)) => Some((
+                format!("the record was drawn on another platform: {unlike}"),
                 REUSABLE,
             )),
-            (true, true, true) => None,
+            (true, true, None) => None,
         };
         match refusal {
-            Some((message, expected)) => Err(invalid(&reuse.dir, message, expected)),
+            Some((message, expected)) => {
+                Err(Diagnostic::invalid_file(&reuse.dir.join(RECORD), message).expected(expected))
+            }
             None => Ok(Reusing {
                 dir: reuse.dir.clone(),
                 vouched: reuse.frames.clone(),
@@ -273,7 +262,7 @@ impl Reusing {
             ),
             Some(frame) => return Ok(Some(frame)),
         };
-        Err(invalid(&self.dir, disagreement, VOUCHED))
+        Err(Diagnostic::invalid_file(&self.dir.join(RECORD), disagreement).expected(VOUCHED))
     }
 }
 
@@ -286,13 +275,6 @@ fn lists(identities: &Identities) -> String {
         "ours {}, bare {}, shown {shown}",
         identities.ours, identities.bare
     )
-}
-
-/// An invalid diagnostic at the record in `dir`.
-fn invalid(dir: &Path, message: String, expected: &'static str) -> Diagnostic {
-    Diagnostic::new(Kind::Invalid, message)
-        .at(Place::Other(dir.join(RECORD).display().to_string()))
-        .expected(expected)
 }
 
 /// Begins a recording into `dir` ([`begin_sample`]), while frames may be
@@ -324,11 +306,11 @@ pub fn check_recording(dir: &Path, reused: Option<&Path>) -> Result<()> {
         (true, false) => None,
     };
     match unbegun {
-        Some(why) => Err(invalid(
-            dir,
+        Some(why) => Err(Diagnostic::invalid_file(
+            &dir.join(RECORD),
             format!("{why}, and a recording into it has not begun"),
-            "a recording begun with `begin_recording`, which makes the folder and removes its record first",
-        )),
+        )
+        .expected("a recording begun with `begin_recording`, which makes the folder and removes its record first")),
         None => Ok(()),
     }
 }
@@ -337,14 +319,14 @@ pub fn check_recording(dir: &Path, reused: Option<&Path>) -> Result<()> {
 /// path.
 fn refuse_same_folder(dir: &Path, reused: Option<&Path>) -> Result<()> {
     match reused {
-        Some(reused) if same_folder(dir, reused) => Err(invalid(
-            reused,
+        Some(reused) if same_folder(dir, reused) => Err(Diagnostic::invalid_file(
+            &reused.join(RECORD),
             format!(
                 "the run would record into {}, the folder it reuses",
                 dir.display()
             ),
-            "a record folder other than the one the run reuses",
-        )),
+        )
+        .expected("a record folder other than the one the run reuses")),
         _ => Ok(()),
     }
 }

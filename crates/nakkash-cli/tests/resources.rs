@@ -104,6 +104,11 @@ fn a_render_to_digest_writes_nothing_to_storage() {
         stderr.contains("stats: storage: written 0 B"),
         "bytes were written:\n{stderr}"
     );
+    // A render compares no frames, so it counts none.
+    assert!(
+        !stderr.contains("stats: compared frames"),
+        "a render counted compared frames:\n{stderr}"
+    );
     // No file in the working folder or the temporary one.
     assert_eq!(fs::read_dir(&dir).expect("read the folder").count(), 0);
 }

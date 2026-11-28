@@ -267,8 +267,9 @@ pub struct Recording {
     pub dir: PathBuf,
     /// The build drawing them, as the binary names itself.
     pub build: Build,
-    /// The room the run's records may take, shared by its samples: once a
-    /// write would pass it, the run records nothing more.
+    /// The room the run's records may take, shared by its samples: the
+    /// sample whose write would pass it fails, and every sample after it is
+    /// refused unmeasured; the records of the samples before it are kept.
     pub quota: Arc<Quota>,
 }
 
@@ -463,8 +464,10 @@ fn round(value: &mut serde_json::Value) {
 /// else, the frames are written as they are drawn, then the measured scene
 /// and its [`Replay`](crate::record::Replay), and the record
 /// ([`SampleRecord`]) last, once the whole sample has measured, so a sample
-/// that fails leaves none. A run whose quota is spent records nothing more:
-/// each sample after it is refused before its recording begins. With
+/// that fails leaves none. The sample whose write would pass the quota
+/// fails, and a run whose quota is spent measures nothing more: each sample
+/// after it is refused, unmeasured, before its recording begins, while the
+/// records of the samples before it are kept. With
 /// [`MeasureOptions::reuse`] naming the sample, its record is opened
 /// ([`Reusing::open`]) and its frames stand in for draws where the runner
 /// vouches for them ([`Reusing::frame`]); a record made from another entry
@@ -537,7 +540,10 @@ pub fn measure(sample: &Sample, work: &Path, options: &MeasureOptions) -> Result
     let scene = dir.join("scene.json");
     let text = write_document(&import.json);
     fs::write(&scene, &text).map_err(|e| under(Diagnostic::io("write", &scene, &e)))?;
-    let session = Session::open(&scene).map_err(under)?;
+    // Drawn from the text written, not the file read back: another run on
+    // the same work folder may write over it, and the record names this
+    // text's hash.
+    let session = Session::open_text(&scene, text.clone()).map_err(under)?;
     let geometry = session.text_geometry(&import.texts).map_err(under)?;
     let frames = DiffOptions::frames_in(&sample.reference).map_err(under)?;
     let floors = match &sample.floor {

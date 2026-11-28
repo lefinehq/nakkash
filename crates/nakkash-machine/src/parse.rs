@@ -3,6 +3,20 @@
 
 use crate::Pressure;
 
+/// A system named by the versions of its parts, each `(label, version)`,
+/// as `label version`, joined by commas: `macOS 26.3, build 25D125`. Each
+/// version is trimmed; none when any is blank, so a system that leaves a
+/// part out is unknown, never named by the rest.
+pub(crate) fn system_name<const N: usize>(parts: [(&str, &str); N]) -> Option<String> {
+    let named: Option<Vec<String>> = (parts.iter())
+        .map(|(label, version)| {
+            let version = version.trim();
+            (!version.is_empty()).then(|| format!("{label} {version}"))
+        })
+        .collect();
+    named.map(|parts| parts.join(", "))
+}
+
 /// The value of the line `key:` in a `/proc/meminfo`-style file, in bytes
 /// (its figure is in KiB).
 pub(crate) fn meminfo_bytes(text: &str, key: &str) -> Option<u64> {

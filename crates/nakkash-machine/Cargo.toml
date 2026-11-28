@@ -1,6 +1,6 @@
 [package]
 name = "nakkash-machine"
-description = "What the machine a render runs on holds and how it is doing: its memory, its container's limit, memory pressure, what the process used (D90), and the free space of a file system. A platform binding with unsafe code (D48)."
+description = "What the machine a render runs on holds and how it is doing: its memory, its container's limit, memory pressure, what the process used (D90), the free space of a file system, and the system's version, whose maths library a render calls. A platform binding with unsafe code (D48)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,9 @@ publish.workspace = true
 # variables (D48).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+rstest.workspace = true
 
 # Not the workspace's lints: this crate may hold unsafe code (D48), and
 # each block says why it is sound.

@@ -125,6 +125,14 @@ impl Diagnostic {
         )
     }
 
+    /// A [`Kind::Invalid`] diagnostic at the file at `path`, which is not
+    /// what it should be: ``{path}: {message}``. The one way to say so, so
+    /// every reader of a file names it alike; add the accepted form with
+    /// [`expected`](Diagnostic::expected).
+    pub fn invalid_file(path: &Path, message: impl Into<String>) -> Self {
+        Self::new(Kind::Invalid, message).at(Place::other(path.display().to_string()))
+    }
+
     /// Sets the place of the offending input, replacing any place already set.
     #[must_use]
     pub fn at(mut self, place: impl Into<Place>) -> Self {

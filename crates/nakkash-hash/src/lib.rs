@@ -3,10 +3,12 @@
 //! ([D90]).
 //!
 //! The rasteriser keys frame identities by it ([`keyed`]); a fidelity record
-//! names our pixels and masks by it, and the `nakkash` build names its
-//! changed tree by it ([`ContentHasher`], [`content_hash`]). Both sides of a
-//! comparison so hash with the same code. The crate is small and has no
-//! other dependency, so a build script can use it too.
+//! names our pixels and masks by it, the `nakkash` build names its changed
+//! tree by it, and the engine's build names its code generation by it
+//! ([`ContentHasher`], [`content_hash`]). Both sides of a comparison so hash
+//! with the same code. The crate is small and depends on no other nakkash
+//! crate (only on the SipHash implementation), so a build script can use it
+//! too.
 //!
 //! [D90]: https://github.com/lefinehq/nakkash/blob/main/docs/design/decisions.md#d90-a-frame-is-drawn-from-a-plan-that-knows-what-each-drawing-is-under-one-memory-budget
 

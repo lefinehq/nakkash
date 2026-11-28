@@ -60,6 +60,8 @@ fn record() -> SampleRecord {
         platform: Platform {
             target: "aarch64-macos".to_owned(),
             simd: "neon".to_owned(),
+            system: Some("macOS 26.3, build 25D125".to_owned()),
+            codegen: Some(Hex128(0xc0de)),
         },
         build: Build {
             commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),

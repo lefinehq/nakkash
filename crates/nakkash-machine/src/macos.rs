@@ -37,6 +37,54 @@ fn sysctl_i32(name: &CStr) -> Option<i32> {
     sysctl::<4>(name).map(i32::from_ne_bytes)
 }
 
+/// The text kernel variable `name`, without its closing NUL; `None` when
+/// it does not exist or is not UTF-8.
+fn sysctl_text(name: &CStr) -> Option<String> {
+    let mut size = 0;
+    // SAFETY: `name` is a NUL-terminated string; with no buffer (null) the
+    // kernel only sets `size` to the bytes the value takes; no new value is
+    // given (null, 0).
+    let asked = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if asked != 0 || size == 0 {
+        return None;
+    }
+    let mut value = vec![0u8; size];
+    // SAFETY: as above, with `value` a buffer of `size` bytes, which the
+    // kernel writes at most `size` bytes into and sets `size` to what it
+    // wrote.
+    let done = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            value.as_mut_ptr().cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if done != 0 {
+        return None;
+    }
+    value.truncate(size);
+    let text = CStr::from_bytes_until_nul(&value).ok()?;
+    text.to_str().ok().map(str::to_owned)
+}
+
+/// The system's product version and build, whose system library holds
+/// the maths functions: `macOS 26.3, build 25D125`.
+pub(crate) fn system() -> Option<String> {
+    let version = sysctl_text(c"kern.osproductversion")?;
+    let build = sysctl_text(c"kern.osversion")?;
+    parse::system_name([("macOS", &version), ("build", &build)])
+}
+
 pub(crate) fn memory() -> Option<u64> {
     sysctl_u64(c"hw.memsize")
 }

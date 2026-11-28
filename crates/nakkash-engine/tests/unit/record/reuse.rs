@@ -162,21 +162,50 @@ fn a_reuse_list_reads_its_folders_from_its_own_folder() {
     assert_eq!(reuse.samples["m001"].dir, PathBuf::from("/records/m001"));
 }
 
-#[test]
-fn a_reuse_list_from_another_platform_is_refused() {
-    let dir = scratch("reuse-platform");
+/// A list made for another platform, or one that does not know its
+/// system or code generation, is refused, whichever part differs.
+#[rstest]
+#[case::simd("simd", |p: &mut Platform| p.simd = "other".to_owned())]
+#[case::system("system", |p: &mut Platform| p.system = Some("other 1.0, build 1".to_owned()))]
+#[case::unknown_system("unknown-system", |p: &mut Platform| p.system = None)]
+#[case::codegen("codegen", |p: &mut Platform| p.codegen = Some(Hex128(0xbad)))]
+#[case::unknown_codegen("unknown-codegen", |p: &mut Platform| p.codegen = None)]
+fn a_reuse_list_from_another_platform_is_refused(
+    #[case] name: &str,
+    #[case] change: fn(&mut Platform),
+) {
+    let dir = scratch(&format!("reuse-platform-{name}"));
     let path = dir.join("reuse.json");
-    let other = Platform {
-        simd: "other".to_owned(),
-        ..Platform::current()
-    };
+    let mut other = Platform::current();
+    change(&mut other);
     fs::write(&path, reuse_json(&other, "m001")).unwrap();
     let error = Reuse::read(&path).unwrap_err();
     assert_eq!(error.kind, Kind::Invalid, "{error}");
+    assert!(
+        error
+            .message
+            .starts_with("the reuse list was made for another platform: "),
+        "{error}"
+    );
     assert_eq!(
         error.expected.as_deref(),
         Some("a reuse list made on this platform")
     );
+    assert_eq!(error.path_text(), Some(path.display().to_string()));
+}
+
+/// The form a reuse list's error shows names every key the list requires,
+/// so a list written after it is read.
+#[test]
+fn the_reuse_form_names_every_required_key() {
+    for key in [
+        "schema", "platform", "samples", "dir", "record", "frames", "ours", "bare", "shown",
+    ] {
+        assert!(REUSE.contains(&format!("\"{key}\"")), "{key}: {REUSE}");
+    }
+    for key in ["target", "simd", "system", "codegen"] {
+        assert!(REUSE.contains(&format!("\"{key}\"")), "{key}: {REUSE}");
+    }
 }
 
 #[rstest]
@@ -217,11 +246,22 @@ fn a_record_opened_for_reuse_holds_what_its_folder_holds() {
 }
 
 /// A record whose build does not know its code, or that was drawn on
-/// another machine, is never opened for reuse.
+/// another machine, system or code generation, or on one that did not know
+/// its system or code generation, is never opened for reuse.
 #[rstest]
 #[case::unidentified("unidentified", |r: &mut SampleRecord| r.build.commit = None)]
 #[case::other_simd("other-simd", |r: &mut SampleRecord| r.platform.simd = "other".to_owned())]
 #[case::other_target("other-target", |r: &mut SampleRecord| r.platform.target = "other".to_owned())]
+#[case::other_system(
+    "other-system",
+    |r: &mut SampleRecord| r.platform.system = Some("other 1.0, build 1".to_owned())
+)]
+#[case::unknown_system("unknown-system", |r: &mut SampleRecord| r.platform.system = None)]
+#[case::other_codegen(
+    "other-codegen",
+    |r: &mut SampleRecord| r.platform.codegen = Some(Hex128(0xbad))
+)]
+#[case::unknown_codegen("unknown-codegen", |r: &mut SampleRecord| r.platform.codegen = None)]
 fn a_record_that_cannot_vouch_for_its_pixels_is_refused(
     #[case] name: &str,
     #[case] change: fn(&mut SampleRecord),
@@ -231,6 +271,7 @@ fn a_record_that_cannot_vouch_for_its_pixels_is_refused(
     assert_eq!(error.kind, Kind::Invalid, "{error}");
     let place = error.path.as_ref().expect("a path").to_string();
     assert_eq!(place, dir.join(RECORD).display().to_string());
+    assert_eq!(error.expected.as_deref(), Some(REUSABLE));
 }
 
 #[test]
@@ -373,7 +414,7 @@ fn every_reuse_error_message() {
     let list = dir.join("reuse.json");
     let other = Platform {
         target: "other-os".to_owned(),
-        simd: "other".to_owned(),
+        ..Platform::current()
     };
     fs::write(&list, reuse_json(&other, "m001")).unwrap();
     let opened_error = |name: &str, change: fn(&mut SampleRecord)| {
@@ -413,13 +454,14 @@ fn every_reuse_error_message() {
             opened_error("errors-build", |r| r.build.commit = None),
         ),
         (
-            "record of another platform",
+            "record of another system",
             opened_error("errors-platform", |r| {
-                r.platform = Platform {
-                    target: "other-os".to_owned(),
-                    simd: "other".to_owned(),
-                };
+                r.platform.system = Some("other 1.0, build 1".to_owned());
             }),
+        ),
+        (
+            "record of an unknown code generation",
+            opened_error("errors-codegen", |r| r.platform.codegen = None),
         ),
         ("not in the record", frame_error("errors-short", 4, |_| {})),
         (
@@ -465,7 +507,14 @@ fn every_reuse_error_message() {
         .collect::<Vec<_>>()
         .join("\n")
         .replace(&scratch_of("").display().to_string(), "<scratch>/")
-        .replace(&platform.to_string(), "<this platform>")
+        .replace(&platform.target, "<this target>")
+        .replace(
+            platform
+                .system
+                .as_deref()
+                .expect("this system names itself"),
+            "<this system>",
+        )
         // A record's hash covers its platform, which differs by machine.
         .replace(&read_pinned(&again).unwrap().1.to_string(), "<hash now>")
         .replace(&pinned.record.to_string(), "<hash judged>");

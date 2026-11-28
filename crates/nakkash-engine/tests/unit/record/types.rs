@@ -61,13 +61,124 @@ fn only_the_one_schema_name_is_read(#[case] json: &str) {
 }
 
 #[test]
-fn the_platform_names_this_processor_and_its_simd_level() {
+fn the_platform_names_this_processor_its_simd_level_system_and_code_generation() {
     let platform = Platform::current();
     assert_eq!(
         platform.target,
         format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
     );
     assert_eq!(platform.simd, nakkash_raster::simd_level());
+    assert_eq!(platform.system, nakkash_machine::system());
+    // The tests were built by cargo, whose compiler answers `-vV`.
+    assert!(platform.codegen.is_some(), "{platform:?}");
+    assert_eq!(Platform::current(), platform);
+}
+
+/// The code generation is read from what the build script wrote: a hash,
+/// or nothing when the script could not tell; anything else is unknown
+/// too, never a hash.
+#[rstest]
+#[case::hash("0000000000000000000000000000c0de", Some(Hex128(0xc0de)))]
+#[case::unknown("", None)]
+#[case::short("c0de", None)]
+#[case::upper("0000000000000000000000000000C0DE", None)]
+fn the_code_generation_is_read_from_the_build_script(
+    #[case] script: &str,
+    #[case] read: Option<Hex128>,
+) {
+    assert_eq!(codegen_from_script(script), read);
+}
+
+/// A platform of this machine, as another machine might have written it.
+fn platform() -> Platform {
+    Platform {
+        target: "aarch64-macos".to_owned(),
+        simd: "neon".to_owned(),
+        system: Some("macOS 26.3, build 25D125".to_owned()),
+        codegen: Some(Hex128(0xc0de)),
+    }
+}
+
+/// Two platforms match when every part is known and equal. The first part
+/// that differs, or is unknown on either side, is named: an unknown
+/// system or code generation matches nothing, not even another unknown.
+#[rstest]
+#[case::same(|_: &mut Platform| {}, |_: &mut Platform| {}, None)]
+#[case::target(
+    |p: &mut Platform| p.target = "x86_64-linux".to_owned(),
+    |_: &mut Platform| {},
+    Some("its target is x86_64-linux, and this machine's is aarch64-macos")
+)]
+#[case::simd(
+    |p: &mut Platform| p.simd = "avx2".to_owned(),
+    |_: &mut Platform| {},
+    Some("its SIMD level is avx2, and this machine's is neon")
+)]
+#[case::system(
+    |p: &mut Platform| p.system = Some("macOS 26.2, build 25C56".to_owned()),
+    |_: &mut Platform| {},
+    Some("its system is macOS 26.2, build 25C56, and this machine's is macOS 26.3, build 25D125")
+)]
+#[case::codegen(
+    |p: &mut Platform| p.codegen = Some(Hex128(0xbad)),
+    |_: &mut Platform| {},
+    Some("its code generation is 00000000000000000000000000000bad, and this machine's is 0000000000000000000000000000c0de")
+)]
+#[case::system_unknown_there(
+    |p: &mut Platform| p.system = None,
+    |_: &mut Platform| {},
+    Some("its system is unknown, and an unknown system matches none")
+)]
+#[case::system_unknown_here(
+    |_: &mut Platform| {},
+    |p: &mut Platform| p.system = None,
+    Some("this machine's system is unknown, and an unknown system matches none")
+)]
+#[case::system_unknown_on_both(
+    |p: &mut Platform| p.system = None,
+    |p: &mut Platform| p.system = None,
+    Some("its system is unknown, and an unknown system matches none")
+)]
+#[case::codegen_unknown_on_both(
+    |p: &mut Platform| p.codegen = None,
+    |p: &mut Platform| p.codegen = None,
+    Some("its code generation is unknown, and an unknown code generation matches none")
+)]
+#[case::first_part_named(
+    |p: &mut Platform| {
+        p.simd = "avx2".to_owned();
+        p.codegen = None;
+    },
+    |_: &mut Platform| {},
+    Some("its SIMD level is avx2, and this machine's is neon")
+)]
+fn a_platform_matches_only_when_every_part_is_known_and_equal(
+    #[case] there: fn(&mut Platform),
+    #[case] here: fn(&mut Platform),
+    #[case] unlike: Option<&str>,
+) {
+    let (mut theirs, mut ours) = (platform(), platform());
+    there(&mut theirs);
+    here(&mut ours);
+    assert_eq!(theirs.unlike(&ours).as_deref(), unlike);
+}
+
+/// A platform's system and code generation are required, null or not, so
+/// a record written before they were named is refused, not read as one
+/// whose parts are unknown.
+#[rstest]
+#[case::no_system(r#"{"target":"aarch64-macos","simd":"neon","codegen":null}"#)]
+#[case::no_codegen(r#"{"target":"aarch64-macos","simd":"neon","system":null}"#)]
+#[case::extra(
+    r#"{"target":"aarch64-macos","simd":"neon","system":null,"codegen":null,"cpu":"m4"}"#
+)]
+fn a_platform_without_every_part_is_refused(#[case] json: &str) {
+    assert!(serde_json::from_str::<Platform>(json).is_err(), "{json}");
+    let unknown = r#"{"target":"aarch64-macos","simd":"neon","system":null,"codegen":null}"#;
+    let read: Platform = serde_json::from_str(unknown).unwrap();
+    assert_eq!((read.system, read.codegen), (None, None));
+    let json = serde_json::to_string(&platform()).unwrap();
+    assert_eq!(serde_json::from_str::<Platform>(&json).unwrap(), platform());
 }
 
 /// A build is identified by its commit; a tree's hash says it was dirty.

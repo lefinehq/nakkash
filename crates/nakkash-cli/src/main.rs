@@ -437,10 +437,11 @@ enum Command {
         record: Option<PathBuf>,
         /// The most this run writes into the records, in GiB, such as `8`:
         /// refused before anything is written when the file system holding
-        /// them has less free, and the run records nothing more once what
-        /// it writes would pass it. Records already in `DIR` that this run
-        /// does not write again, such as those of samples left out by
-        /// `--only`, are not counted.
+        /// them has less free. The sample whose write would pass it and
+        /// every sample after it are not measured, and the run exits 1;
+        /// the records of the samples before it are kept. Records already
+        /// in `DIR` that this run does not write again, such as those of
+        /// samples left out by `--only`, are not counted.
         #[arg(long, value_name = "GIB", requires = "record")]
         record_cap: Option<commands::fidelity::RecordCap>,
         /// A runner's list of the recorded frames it vouches for

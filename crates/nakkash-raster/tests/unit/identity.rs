@@ -275,5 +275,5 @@ fn a_forged_id_of_a_dropped_font_is_still_its_own_font() {
 fn a_content_hash_is_the_identity_hasher_over_raw_bytes() {
     let mut h = Hasher::new("pixels");
     h.bytes(b"nakkash");
-    assert_eq!(crate::content_hash("pixels", b"nakkash"), h.id().0);
+    assert_eq!(nakkash_hash::content_hash("pixels", b"nakkash"), h.id().0);
 }

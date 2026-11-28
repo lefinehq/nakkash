@@ -6,7 +6,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use nakkash_format::{Diagnostic, Kind, Place, Result};
+use nakkash_format::{Diagnostic, Result};
 use nakkash_hash::content_hash;
 
 use super::files::{sync_dir, temporary, write_whole};
@@ -73,10 +73,8 @@ fn remove(path: &Path) -> Result<()> {
 /// written.
 pub fn write_sample(dir: &Path, record: &SampleRecord, quota: &Quota) -> Result<()> {
     let path = dir.join(RECORD);
-    let mut bytes = serde_json::to_vec_pretty(record).map_err(|e| {
-        Diagnostic::new(Kind::Invalid, format!("cannot write the record: {e}"))
-            .at(Place::Other(path.display().to_string()))
-    })?;
+    let mut bytes = serde_json::to_vec_pretty(record)
+        .map_err(|e| Diagnostic::invalid_file(&path, format!("cannot write the record: {e}")))?;
     bytes.push(b'\n');
     write_whole(&path, &bytes, quota)?;
     sync_dir(dir)
@@ -104,14 +102,9 @@ pub fn read_sample(dir: &Path) -> Result<SampleRecord> {
 /// names a shown list without a shown mask, or a mask without a list.
 pub fn read_pinned(dir: &Path) -> Result<(SampleRecord, Hex128)> {
     let path = dir.join(RECORD);
-    let invalid = |message: String| {
-        Diagnostic::new(Kind::Invalid, message)
-            .at(Place::Other(path.display().to_string()))
-            .expected(EXPECTED)
-    };
     let bytes = fs::read(&path).map_err(|e| Diagnostic::io("read", &path, &e))?;
-    let record: SampleRecord =
-        serde_json::from_slice(&bytes).map_err(|e| invalid(e.to_string()))?;
+    let record: SampleRecord = serde_json::from_slice(&bytes)
+        .map_err(|e| Diagnostic::invalid_file(&path, e.to_string()).expected(EXPECTED))?;
     for (i, frame) in record.frames.iter().enumerate() {
         let checks = [
             (
@@ -140,7 +133,7 @@ pub fn read_pinned(dir: &Path) -> Result<(SampleRecord, Hex128)> {
             ),
         ];
         if let Some((_, message)) = checks.into_iter().find(|(wrong, _)| *wrong) {
-            return Err(invalid(message));
+            return Err(Diagnostic::invalid_file(&path, message).expected(EXPECTED));
         }
     }
     Ok((record, Hex128(content_hash(PIN, &bytes))))

@@ -130,3 +130,44 @@ fn free_space_is_known_for_an_existing_folder_only() {
     assert_eq!(free_space(&here.join("nakkash-no-such-folder/below")), None);
     assert_eq!(free_space(std::path::Path::new("a\0b")), None);
 }
+
+/// A system is named by the versions of its parts, in order; a part the
+/// system left blank leaves the whole unknown, never named by the rest.
+#[rstest::rstest]
+#[case::macos([("macOS", "26.3"), ("build", "25D125")], Some("macOS 26.3, build 25D125"))]
+#[case::linux(
+    [("glibc", "2.39"), ("Linux", "6.8.0-49-generic")],
+    Some("glibc 2.39, Linux 6.8.0-49-generic")
+)]
+#[case::trimmed([("macOS", " 26.3\n"), ("build", "25D125 ")], Some("macOS 26.3, build 25D125"))]
+#[case::blank_version([("macOS", ""), ("build", "25D125")], None)]
+#[case::blank_build([("macOS", "26.3"), ("build", "  ")], None)]
+#[case::blank_kernel([("glibc", "2.39"), ("Linux", "")], None)]
+fn a_system_is_named_by_its_parts_or_unknown(
+    #[case] parts: [(&str, &str); 2],
+    #[case] named: Option<&str>,
+) {
+    assert_eq!(parse::system_name(parts).as_deref(), named);
+}
+
+/// This machine names its system as its kind of system does, the same at
+/// every call.
+#[test]
+fn this_machine_names_its_system() {
+    let system = system();
+    #[cfg(target_os = "macos")]
+    let prefix = Some("macOS ");
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    let prefix = Some("glibc ");
+    #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+    let prefix: Option<&str> = None;
+    match prefix {
+        Some(prefix) => {
+            let named = system.clone().expect("this system names itself");
+            assert!(named.starts_with(prefix), "{named}");
+            assert!(named.contains(", "), "{named}");
+        }
+        None => assert_eq!(system, None),
+    }
+    assert_eq!(super::system(), system);
+}

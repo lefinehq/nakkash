@@ -1,7 +1,7 @@
 //! The process's resource use, from `getrusage`, the same call on every
 //! Unix, and the free space of a file system.
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -39,6 +39,44 @@ pub(crate) fn rusage() -> Usage {
         major_faults: u64::try_from(usage.ru_majflt).unwrap_or(0),
         written: None,
     }
+}
+
+/// The release of the running kernel, from `uname`, such as
+/// `6.8.0-49-generic`; `None` when the call fails or it is not UTF-8.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "read on Linux"))]
+pub(crate) fn kernel_release() -> Option<String> {
+    let mut name = MaybeUninit::<libc::utsname>::zeroed();
+    // SAFETY: `uname` writes one `utsname` into the pointer, which points
+    // at one.
+    let done = unsafe { libc::uname(name.as_mut_ptr()) };
+    if done != 0 {
+        return None;
+    }
+    // SAFETY: a zeroed `utsname` is valid, as it holds only byte arrays,
+    // and the call above filled it.
+    let name = unsafe { name.assume_init() };
+    // Each field is NUL-terminated within its array.
+    let bytes: Vec<u8> = (name.release.iter())
+        .map(|c| u8::from_ne_bytes(c.to_ne_bytes()))
+        .collect();
+    let release = CStr::from_bytes_until_nul(&bytes).ok()?;
+    release.to_str().ok().map(str::to_owned)
+}
+
+/// The version of the GNU C library the process runs with, such as
+/// `2.39`: the library loaded, not the one built against.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub(crate) fn glibc_version() -> Option<String> {
+    // SAFETY: `gnu_get_libc_version` takes nothing and returns a pointer to
+    // a static NUL-terminated string the library owns.
+    let version = unsafe { libc::gnu_get_libc_version() };
+    if version.is_null() {
+        return None;
+    }
+    // SAFETY: `version` is non-null and points at the library's static
+    // NUL-terminated string, which lives as long as the process.
+    let version = unsafe { CStr::from_ptr(version) };
+    version.to_str().ok().map(str::to_owned)
 }
 
 /// The size of a memory page, in bytes.

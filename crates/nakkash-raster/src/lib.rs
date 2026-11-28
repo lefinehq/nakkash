@@ -86,9 +86,6 @@ pub use list::{
     MatteMode, Node, PathDraw, Projection, Shared,
 };
 pub use mask::{MaskCoverage, MaskStep, SIGMA_PER_FEATHER, combine_on_cpu};
-/// The content hash a fidelity record names pixels by: the identity hasher
-/// over raw bytes.
-pub use nakkash_hash::content_hash;
 pub use picture::Picture;
 pub use pixels::{Pixel, Pixels};
 pub use plan::{Blur, Glow, GlowComposite, PLANS, Passes, Plan, PlanSpec, Shadow};
