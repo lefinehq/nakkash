@@ -6,7 +6,12 @@ hash: `ABC` is not a valid 128-bit hash; expected 32 lowercase hexadecimal digit
 not a pixel file: <dir>/f0000.cov: not a pixel file of a fidelity record; expected a pixel file whole, as the record wrote it; record the sample again
 other kind: <dir>/f0000.ours.lz4: holds a mask, not our pixels; expected a pixel file whole, as the record wrote it; record the sample again
 other size: <dir>/f0000.ours.lz4: holds a 3x2 frame, not 2x3; expected a pixel file whole, as the record wrote it; record the sample again
-damaged payload: <dir>/f0000.ours.lz4: its payload is cut short or damaged; expected a pixel file whole, as the record wrote it; record the sample again
-content hash: <dir>/f0000.shown: its payload hashes to 1c878d0577defd048f6f750c9e95ad9e, not to the c78041a5b0834c5e75ed8f46a7e5a341 its header gives; expected a pixel file whole, as the record wrote it; record the sample again
+other run: <dir>/f0000.cov: holds a frame hashed 9f4d10103401ec0e1816b271807f0d5c, not the ef0e627fe97823d0cd69c6a2b59bbc61 its record names; expected a pixel file whole, as the record wrote it; record the sample again
+payload hash: <dir>/f0000.shown: its payload hashes to 434c41ffb7f7398c0beccac0f05da3b9, not to the 75845901d5bbb37dda9a1c661fce0b66 its header gives; expected a pixel file whole, as the record wrote it; record the sample again
+damaged payload: <dir>/f0000.ours.lz4: its payload does not decode to the frame; expected a pixel file whole, as the record wrote it; record the sample again
+decoded: <dir>/f0000.ours.lz4: it decodes to a frame hashed ad87b62b060cbcb5d5eba4ab2b985ebd, not the 8a852a9a9eeb270e10b9e26fa4df78eb its header gives; expected a pixel file whole, as the record wrote it; record the sample again
 mask of another size: the coverage mask has 5 pixels, not the 3x2 of our frame; expected a mask with one value for each pixel of our frame
 record: <dir>/record.json: missing field `schema` at line 1 column 2; expected a record written by this build: {"schema":"nakkash.FidelityRecord.1",…}
+index: <dir>/record.json: frame 0 has the index 1; expected a record written by this build: {"schema":"nakkash.FidelityRecord.1",…}
+file: <dir>/record.json: frame 0 names the file `x.png`, its errors `f0001.png`; expected a record written by this build: {"schema":"nakkash.FidelityRecord.1",…}
+time: <dir>/record.json: frame 0 is at 0.04s, its errors at 0s; expected a record written by this build: {"schema":"nakkash.FidelityRecord.1",…}

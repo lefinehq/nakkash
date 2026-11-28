@@ -62,8 +62,8 @@ fn record() -> SampleRecord {
             simd: "neon".to_owned(),
         },
         build: Build {
-            commit: "0123456789abcdef0123456789abcdef01234567".to_owned(),
-            dirty: false,
+            commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            tree: Some(Hex128(0xd1f7)),
             profile: "release".to_owned(),
         },
         entry: Hex128(0xfeed),
@@ -77,7 +77,7 @@ fn record() -> SampleRecord {
 #[rstest]
 #[case::top("\"schema\"", "\"extra\":1,\"schema\"")]
 #[case::frame("\"index\"", "\"extra\":1,\"index\"")]
-#[case::build("\"dirty\"", "\"extra\":1,\"dirty\"")]
+#[case::build("\"profile\"", "\"extra\":1,\"profile\"")]
 #[case::error("\"pixels\"", "\"extra\":1,\"pixels\"")]
 #[case::times("\"draw\"", "\"extra\":1,\"draw\"")]
 fn a_sample_record_round_trips_and_refuses_unknown_fields(
@@ -124,6 +124,52 @@ fn a_record_of_another_form_is_invalid(#[case] from: &str, #[case] to: &str) {
     assert!(json.contains(from), "{json}");
     fs::write(&path, json.replacen(from, to, 1)).unwrap();
     assert_eq!(read_sample(&dir).unwrap_err().kind, Kind::Invalid);
+}
+
+/// A frame's index is its place, and its file and time are its errors'.
+#[rstest]
+#[case::index(|f: &mut FrameRecord| f.index = 0)]
+#[case::file(|f: &mut FrameRecord| f.file = "f0009.png".to_owned())]
+#[case::time(|f: &mut FrameRecord| f.time = f64::from_bits(f.diff.time.to_bits() + 1))]
+fn a_record_whose_frames_disagree_is_invalid(#[case] change: fn(&mut FrameRecord)) {
+    let dir = scratch(&format!("disagree-{:p}", change as *const ()));
+    let mut sample = record();
+    change(&mut sample.frames[1]);
+    write_sample(&dir, &sample).unwrap();
+    let error = read_sample(&dir).unwrap_err();
+    assert_eq!(error.kind, Kind::Invalid);
+    let place = error
+        .path
+        .as_ref()
+        .expect("the error has a path")
+        .to_string();
+    assert!(place.ends_with(RECORD), "{place}");
+    assert!(error.message.starts_with("frame 1 "), "{error}");
+    assert!(error.expected.is_some());
+}
+
+/// A recording begins by removing the folder's record, and only it.
+#[test]
+fn beginning_a_recording_removes_the_record() {
+    let dir = scratch("begin");
+    write_sample(&dir, &record()).unwrap();
+    fs::write(dir.join("f0000.cov"), b"frame").unwrap();
+    begin_sample(&dir).unwrap();
+    assert!(!dir.join(RECORD).exists());
+    assert!(dir.join("f0000.cov").exists());
+    assert_eq!(read_sample(&dir).unwrap_err().kind, Kind::Io);
+    // Again, with no record, and in a folder not made yet.
+    begin_sample(&dir).unwrap();
+    let new = dir.join("new");
+    begin_sample(&new).unwrap();
+    assert!(new.is_dir());
+}
+
+#[test]
+fn a_record_that_cannot_be_removed_is_an_io_error() {
+    let dir = scratch("begin-blocked");
+    fs::create_dir(dir.join(RECORD)).unwrap();
+    assert_eq!(begin_sample(&dir).unwrap_err().kind, Kind::Io);
 }
 
 #[test]

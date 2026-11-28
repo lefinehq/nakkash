@@ -11,7 +11,7 @@ expression: json
   },
   "build": {
     "commit": "0123456789abcdef0123456789abcdef01234567",
-    "dirty": false,
+    "tree": "0000000000000000000000000000d1f7",
     "profile": "release"
   },
   "entry": "0000000000000000000000000000feed",

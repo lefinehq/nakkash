@@ -89,27 +89,36 @@ impl Platform {
 }
 
 /// The build a record was made with, so that both sides of a comparison
-/// are known to come from the same code.
+/// are known to come from the same code. The binary names it, from its
+/// build script, and hands it to the engine; the engine only keeps it.
+///
+/// A build is identified by its commit and, when the tree had changes, by
+/// the hash of those changes. A build made without git, or outside its own
+/// checkout, is unidentified ([`Build::identified`]): nothing says what
+/// code drew its record, so the record must never be reused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Build {
-    /// The commit checked out, as `git rev-parse HEAD` gives it, or
-    /// `unknown` when the build had no git.
-    pub commit: String,
-    /// Whether the tree had changes from that commit.
-    pub dirty: bool,
+    /// The commit checked out, as `git rev-parse HEAD` gives it; none when
+    /// the build could not tell.
+    pub commit: Option<String>,
+    /// The content hash of the tree's changes from that commit, tracked and
+    /// untracked; none when the tree was clean.
+    pub tree: Option<Hex128>,
     /// The cargo profile, such as `release`.
     pub profile: String,
 }
 
 impl Build {
-    /// This build, as the build script named it.
-    pub fn current() -> Build {
-        Build {
-            commit: env!("NAKKASH_BUILD_COMMIT").to_owned(),
-            dirty: env!("NAKKASH_BUILD_DIRTY") == "true",
-            profile: env!("NAKKASH_BUILD_PROFILE").to_owned(),
-        }
+    /// Whether the build knows what code it is: a record made by a build
+    /// that does not is never reused.
+    pub fn identified(&self) -> bool {
+        self.commit.is_some()
+    }
+
+    /// Whether the tree had changes from its commit.
+    pub fn dirty(&self) -> bool {
+        self.tree.is_some()
     }
 }
 

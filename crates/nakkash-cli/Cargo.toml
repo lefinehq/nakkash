@@ -43,7 +43,13 @@ sha2.workspace = true
 strum.workspace = true
 tracing.workspace = true
 
+# The build script names the build by the one content hash.
+[build-dependencies]
+nakkash-hash = { path = "../nakkash-hash" }
+
 [dev-dependencies]
+# The build script's checkout probe, tested with the binary's tests.
+nakkash-hash = { path = "../nakkash-hash" }
 rstest.workspace = true
 pretty_assertions.workspace = true
 nakkash-format = { path = "../nakkash-format" }

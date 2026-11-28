@@ -1,6 +1,6 @@
 //! Unit tests for `src/record/types.rs`: hashes written as 32 hexadecimal
-//! digits and nothing else, the one schema name, and the platform and build
-//! a record is made on.
+//! digits and nothing else, the one schema name, the platform a record is
+//! made on, and what a build says of itself.
 
 use proptest::prelude::*;
 use rstest::rstest;
@@ -70,25 +70,26 @@ fn the_platform_names_this_processor_and_its_simd_level() {
     assert_eq!(platform.simd, nakkash_raster::simd_level());
 }
 
-/// The build script names the commit checked out when it ran, which the
-/// tests were built at.
-#[test]
-fn the_build_names_this_checkout() {
-    let build = Build::current();
-    let head = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
-    assert_eq!(build.commit, head.unwrap_or_else(|| "unknown".to_owned()));
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
+/// A build is identified by its commit; a tree's hash says it was dirty.
+#[rstest]
+#[case::clean(Some("0123"), None, true, false)]
+#[case::dirty(Some("0123"), Some(Hex128(7)), true, true)]
+#[case::unidentified(None, None, false, false)]
+fn a_build_says_whether_it_is_identified_and_dirty(
+    #[case] commit: Option<&str>,
+    #[case] tree: Option<Hex128>,
+    #[case] identified: bool,
+    #[case] dirty: bool,
+) {
+    let build = Build {
+        commit: commit.map(str::to_owned),
+        tree,
+        profile: "release".to_owned(),
     };
-    assert_eq!(build.profile, profile);
+    assert_eq!(build.identified(), identified);
+    assert_eq!(build.dirty(), dirty);
+    let json = serde_json::to_string(&build).unwrap();
+    assert_eq!(serde_json::from_str::<Build>(&json).unwrap(), build);
 }
 
 proptest! {

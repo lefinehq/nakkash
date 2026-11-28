@@ -61,10 +61,7 @@ impl Hasher {
     /// A hasher for a part of kind `tag`, so parts of different kinds that
     /// hold the same numbers have different identities.
     pub(crate) fn new(tag: &str) -> Hasher {
-        let mut hasher = Hasher(SipHasher13::new_with_keys(
-            0x6e61_6b6b_6173_6800,
-            0x6964_656e_7469_7479,
-        ));
+        let mut hasher = Hasher(nakkash_hash::keyed());
         hasher.text(tag);
         hasher
     }
@@ -267,16 +264,6 @@ impl Hasher {
             }
         }
     }
-}
-
-/// The content hash of `bytes`, tagged `tag` so that bytes of different
-/// kinds that happen to agree hash apart: the identity hasher over raw
-/// bytes, the same in every run and on every machine. A fidelity record
-/// names our pixels and masks by it, and checks its files against it.
-pub fn content_hash(tag: &str, bytes: &[u8]) -> u128 {
-    let mut h = Hasher::new(tag);
-    h.bytes(bytes);
-    h.id().0
 }
 
 /// The identity of `frame` drawn on a `width` by `height` canvas with

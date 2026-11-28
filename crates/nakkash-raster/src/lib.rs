@@ -77,7 +77,7 @@ pub use generate::{
     NOISE_CELL, NoiseKind, Overflow, Ramp, VenetianBlinds,
 };
 pub use homography::Homography;
-pub use identity::{content_hash, frame_identity, reused as drawings_reused, verify_hit};
+pub use identity::{frame_identity, reused as drawings_reused, verify_hit};
 pub use image::Image;
 pub use lens::{IRIS_ROWS, Iris, LensBlur, LensMap, Level as LensLevel, Row as IrisRow};
 pub use light::Bevel;
@@ -86,6 +86,9 @@ pub use list::{
     MatteMode, Node, PathDraw, Projection, Shared,
 };
 pub use mask::{MaskCoverage, MaskStep, SIGMA_PER_FEATHER, combine_on_cpu};
+/// The content hash a fidelity record names pixels by: the identity hasher
+/// over raw bytes.
+pub use nakkash_hash::content_hash;
 pub use picture::Picture;
 pub use pixels::{Pixel, Pixels};
 pub use plan::{Blur, Glow, GlowComposite, PLANS, Passes, Plan, PlanSpec, Shadow};

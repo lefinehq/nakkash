@@ -23,7 +23,9 @@ all = "warn"
 [workspace.dependencies]
 glam = { version = "0.34", default-features = false, features = ["std", "f64"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+# `float_roundtrip`: every crate reads a JSON number to the f64 it was
+# written from, so a fidelity record's unrounded errors read back bit for bit.
+serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
 serde_path_to_error = "0.1"
 indexmap = { version = "2", features = ["serde"] }
 winnow = "1"

@@ -1,38 +1,42 @@
 //! A frame's pixels and masks in a record, one file each.
 //!
-//! Every file starts with a header: the magic `nakkash.Pixels.1`, what the
-//! file holds (one byte: 1 for our pixels, 2 for a mask), the frame's width
-//! and height (`u32` each) and the content hash of the payload (`u128`),
-//! all little-endian. Then comes the payload:
+//! Every file starts with a header, little-endian:
 //!
-//! - our pixels: their RGBA bytes in the lz4 frame format;
-//! - a mask: one bit a pixel, row by row, the first pixel in a byte's
-//!   lowest bit, and bits past the last pixel zero.
+//! - the magic `nakkash.Pixels.1`;
+//! - what the file holds, one byte: 1 for our pixels, 2 for a mask;
+//! - the frame's width and height, a `u32` each;
+//! - the content hash of the payload as stored (`u128`), which catches a
+//!   file cut short or damaged;
+//! - the content hash of what it holds, decoded (`u128`): [`pixels_hash`]
+//!   or [`mask_hash`], the hash the frame's [`FrameRecord`] names.
 //!
-//! Reading checks the payload against its hash before anything else, so a
-//! file cut short, damaged, of another kind or of another frame's size is
-//! refused, never used. A mask's payload is its packed bits, so its hash is
-//! [`mask_hash`], the one the frame's [`FrameRecord`](super::FrameRecord)
-//! names; our pixels are hashed as compressed, and the record names them by
-//! [`pixels_hash`], of their RGBA bytes.
+//! Then comes the payload: our pixels as their RGBA bytes in the lz4 frame
+//! format, or a mask at one bit a pixel, row by row, the first pixel in a
+//! byte's lowest bit, and bits past the last pixel zero.
+//!
+//! A file is read only against the record that names it ([`read_frame`]),
+//! and refused unless it holds what the record names: a file of another
+//! run, cut short, damaged, of another kind or of another frame's size is
+//! never used. Each file is written whole ([`write_whole`]).
 
-use std::fs::{self, File};
-use std::io::{self, BufWriter, Cursor, Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 
 use binrw::{BinRead, BinWrite, binrw};
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use nakkash_format::{Diagnostic, Kind, Place, Result};
-use nakkash_raster::{Image, content_hash};
+use nakkash_hash::{ContentHasher, content_hash};
+use nakkash_raster::Image;
 
-use super::{Drawn, Hex128};
+use super::files::write_whole;
+use super::{Drawn, FrameRecord, Hex128};
 
 /// The tag of [`pixels_hash`].
 const PIXELS: &str = "nakkash.record.pixels";
-/// The tag of [`mask_hash`], and of a mask file's payload.
+/// The tag of [`mask_hash`].
 const MASK: &str = "nakkash.record.mask";
-/// The tag of the payload of a file of our pixels: compressed.
-const COMPRESSED: &str = "nakkash.record.pixels.lz4";
+/// The tag of the hash of a payload as stored.
+const PAYLOAD: &str = "nakkash.record.payload";
 
 /// The file name endings of our pixels, the coverage and the shown mask.
 const OURS: &str = "ours.lz4";
@@ -64,23 +68,15 @@ struct Header {
     width: u32,
     /// The frame's height in pixels.
     height: u32,
-    /// The content hash of the payload, tagged by the content.
+    /// The content hash of the payload as stored.
+    payload: u128,
+    /// The content hash of what the file holds, decoded.
     hash: u128,
 }
 
-impl Content {
-    /// The tag of the content hash of a payload of this content.
-    fn tag(self) -> &'static str {
-        match self {
-            Content::Pixels => COMPRESSED,
-            Content::Mask => MASK,
-        }
-    }
-}
-
 /// The length of [`Header`] in bytes: the magic, the content, the size and
-/// the hash.
-const HEADER: usize = 16 + 1 + 4 + 4 + 16;
+/// the two hashes.
+const HEADER: usize = 16 + 1 + 4 + 4 + 16 + 16;
 
 /// Why a pixel file is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,10 +90,15 @@ enum Reason {
         found: (u32, u32),
         frame: (u32, u32),
     },
-    /// Its payload is cut short, too long or not what its kind holds.
+    /// It holds other pixels than its record names: a file of another run.
+    Record { found: u128, record: u128 },
+    /// Its payload's hash is not the one its header gives: cut short or
+    /// damaged.
+    Payload { found: u128, header: u128 },
+    /// Its payload does not decode to a frame of its size.
     Damaged,
-    /// Its payload's hash is not the one its header gives.
-    Hash { found: u128, header: u128 },
+    /// What it decodes to is not what its header names.
+    Decoded { found: u128, header: u128 },
 }
 
 impl Reason {
@@ -111,9 +112,19 @@ impl Reason {
                 "holds a {}x{} frame, not {}x{}",
                 found.0, found.1, frame.0, frame.1
             ),
-            Reason::Damaged => "its payload is cut short or damaged".to_owned(),
-            Reason::Hash { found, header } => format!(
+            Reason::Record { found, record } => format!(
+                "holds a frame hashed {}, not the {} its record names",
+                Hex128(found),
+                Hex128(record)
+            ),
+            Reason::Payload { found, header } => format!(
                 "its payload hashes to {}, not to the {} its header gives",
+                Hex128(found),
+                Hex128(header)
+            ),
+            Reason::Damaged => "its payload does not decode to the frame".to_owned(),
+            Reason::Decoded { found, header } => format!(
+                "it decodes to a frame hashed {}, not the {} its header gives",
                 Hex128(found),
                 Hex128(header)
             ),
@@ -124,20 +135,27 @@ impl Reason {
     }
 }
 
-/// The content hash of our pixels: of their RGBA bytes.
+/// The content hash of our pixels: of their size and RGBA bytes.
 pub fn pixels_hash(image: &Image) -> Hex128 {
-    Hex128(content_hash(PIXELS, image.pixels()))
+    Hex128(sized(PIXELS, image.width(), image.height(), image.pixels()))
 }
 
-/// The content hash of a mask: of its bits, packed as its file holds them.
-/// It does not count the pixels: masks are compared within one frame size.
-pub fn mask_hash(mask: &[bool]) -> Hex128 {
-    Hex128(content_hash(MASK, &pack(mask)))
+/// The content hash of a mask of a `width` by `height` frame: of the size
+/// and of its bits, packed as its file holds them.
+pub fn mask_hash(mask: &[bool], width: u32, height: u32) -> Hex128 {
+    Hex128(sized(MASK, width, height, &pack(mask)))
 }
 
-/// Writes frame `index` of `drawn` into `dir`, which it makes if needed:
-/// `f0000.ours.lz4`, `f0000.cov` and, when there is a shown mask,
-/// `f0000.shown`.
+/// The content hash, tagged `tag`, of `bytes` of a `width` by `height`
+/// frame.
+fn sized(tag: &str, width: u32, height: u32, bytes: &[u8]) -> u128 {
+    (ContentHasher::new(tag).u32(width).u32(height))
+        .bytes(bytes)
+        .finish()
+}
+
+/// Writes frame `index` of `drawn` into `dir`: `f0000.ours.lz4`,
+/// `f0000.cov` and, when there is a shown mask, `f0000.shown`, each whole.
 ///
 /// # Errors
 /// An invalid diagnostic when a mask does not have a value for each pixel
@@ -162,39 +180,60 @@ pub fn write_frame(dir: &Path, index: usize, drawn: &Drawn) -> Result<()> {
             .expected("a mask with one value for each pixel of our frame"));
         }
     }
-    fs::create_dir_all(dir).map_err(|e| Diagnostic::io("create", dir, &e))?;
-    let size = (width, height);
     let path = file(dir, index, OURS);
-    let compress = || {
-        let mut encoder = FrameEncoder::new(Vec::new());
-        encoder.write_all(drawn.ours.pixels())?;
-        Ok::<_, io::Error>(encoder.finish()?)
+    let mut encoder = FrameEncoder::new(Vec::new());
+    let compressed = (encoder.write_all(drawn.ours.pixels()))
+        .and_then(|()| Ok(encoder.finish()?))
+        .map_err(|e| Diagnostic::io("compress", &path, &e))?;
+    let header = Header {
+        content: Content::Pixels,
+        width,
+        height,
+        payload: content_hash(PAYLOAD, &compressed),
+        hash: pixels_hash(&drawn.ours).0,
     };
-    let compressed = compress().map_err(|e| Diagnostic::io("compress", &path, &e))?;
-    write_file(&path, Content::Pixels, size, &compressed)?;
+    write_file(&path, header, &compressed)?;
     for (_, ending, mask) in masks {
         if let Some(mask) = mask {
-            write_file(&file(dir, index, ending), Content::Mask, size, &pack(mask))?;
+            let bits = pack(mask);
+            let header = Header {
+                content: Content::Mask,
+                width,
+                height,
+                payload: content_hash(PAYLOAD, &bits),
+                hash: sized(MASK, width, height, &bits),
+            };
+            write_file(&file(dir, index, ending), header, &bits)?;
         }
     }
     Ok(())
 }
 
-/// Reads frame `index` of `dir`, a `width` by `height` frame, with its
-/// shown mask when `shown`.
+/// Reads the frame `record` names from `dir`, a `width` by `height` frame,
+/// with its shown mask when the record names one.
 ///
 /// # Errors
 /// An I/O diagnostic when a file cannot be read, or an invalid one, with
-/// the file's path, when it is not a pixel file, holds the other kind or
-/// another frame's size, is cut short or damaged, or is not what its
-/// content hash names.
-pub fn read_frame(dir: &Path, index: usize, width: u32, height: u32, shown: bool) -> Result<Drawn> {
-    let pixels = read_file(&file(dir, index, OURS), |b| pixels_of(b, width, height))?;
-    let mask = |ending| read_file(&file(dir, index, ending), |b| mask_of(b, width, height));
+/// the file's path, when it does not hold what the record names: it is not
+/// a pixel file, holds the other kind, another frame's size or other
+/// pixels, or is cut short or damaged.
+pub fn read_frame(dir: &Path, record: &FrameRecord, width: u32, height: u32) -> Result<Drawn> {
+    let index = record.index;
+    let ours = read_file(&file(dir, index, OURS), |bytes| {
+        pixels_of(bytes, width, height, record.ours_pixels.0)
+    })?;
+    let mask = |ending, hash: Hex128| {
+        read_file(&file(dir, index, ending), |bytes| {
+            mask_of(bytes, width, height, hash.0)
+        })
+    };
     Ok(Drawn {
-        ours: Image::new(width, height, pixels)?,
-        coverage: mask(COVERAGE)?,
-        shown: shown.then(|| mask(SHOWN)).transpose()?,
+        ours: Image::new(width, height, ours)?,
+        coverage: mask(COVERAGE, record.coverage)?,
+        shown: record
+            .shown_mask
+            .map(|hash| mask(SHOWN, hash))
+            .transpose()?,
     })
 }
 
@@ -203,22 +242,12 @@ fn file(dir: &Path, index: usize, ending: &str) -> PathBuf {
     dir.join(format!("f{index:04}.{ending}"))
 }
 
-/// Writes `payload` of `content` for a frame of `size` to the file at
-/// `path`, after its header.
-fn write_file(path: &Path, content: Content, size: (u32, u32), payload: &[u8]) -> Result<()> {
-    let header = Header {
-        content,
-        width: size.0,
-        height: size.1,
-        hash: content_hash(content.tag(), payload),
-    };
-    let write = || {
-        let mut out = BufWriter::new(File::create(path)?);
-        header.write(&mut out).map_err(io::Error::other)?;
-        out.write_all(payload)?;
-        out.flush()
-    };
-    write().map_err(|e| Diagnostic::io("write", path, &e))
+/// Writes `header` then `payload` to the file at `path`, whole.
+fn write_file(path: &Path, header: Header, payload: &[u8]) -> Result<()> {
+    write_whole(path, |out| {
+        header.write(out).map_err(std::io::Error::other)?;
+        out.write_all(payload)
+    })
 }
 
 /// Reads the file at `path` and decodes it with `decode`.
@@ -226,7 +255,7 @@ fn read_file<T>(
     path: &Path,
     decode: impl FnOnce(&[u8]) -> std::result::Result<T, Reason>,
 ) -> Result<T> {
-    let bytes = fs::read(path).map_err(|e| Diagnostic::io("read", path, &e))?;
+    let bytes = std::fs::read(path).map_err(|e| Diagnostic::io("read", path, &e))?;
     decode(&bytes).map_err(|reason| reason.at(path))
 }
 
@@ -236,14 +265,16 @@ fn split(bytes: &[u8]) -> std::result::Result<(Header, &[u8]), Reason> {
     Ok((header, &bytes[HEADER..]))
 }
 
-/// The payload of a pixel file of `content` for a `width` by `height`
-/// frame, checked against its hash.
+/// The header and the payload of a pixel file of `content` for a `width`
+/// by `height` frame, whose record names `record`: checked against the
+/// record first, so a file of another run is refused before it is read
+/// further, then against its own payload hash.
 fn checked(
     bytes: &[u8],
     content: Content,
-    width: u32,
-    height: u32,
-) -> std::result::Result<&[u8], Reason> {
+    (width, height): (u32, u32),
+    record: u128,
+) -> std::result::Result<(Header, &[u8]), Reason> {
     let (header, payload) = split(bytes)?;
     if header.content != content {
         return Err(Reason::Holds(header.content));
@@ -254,10 +285,28 @@ fn checked(
             frame: (width, height),
         });
     }
-    let found = content_hash(content.tag(), payload);
+    if header.hash != record {
+        return Err(Reason::Record {
+            found: header.hash,
+            record,
+        });
+    }
+    let found = content_hash(PAYLOAD, payload);
+    match found == header.payload {
+        true => Ok((header, payload)),
+        false => Err(Reason::Payload {
+            found,
+            header: header.payload,
+        }),
+    }
+}
+
+/// Refuses what a file decodes to when its hash `found` is not the one its
+/// header gives.
+fn decoded(found: u128, header: &Header) -> std::result::Result<(), Reason> {
     match found == header.hash {
-        true => Ok(payload),
-        false => Err(Reason::Hash {
+        true => Ok(()),
+        false => Err(Reason::Decoded {
             found,
             header: header.hash,
         }),
@@ -265,9 +314,14 @@ fn checked(
 }
 
 /// Our pixels from the bytes of a pixel file for a `width` by `height`
-/// frame.
-fn pixels_of(bytes: &[u8], width: u32, height: u32) -> std::result::Result<Vec<u8>, Reason> {
-    let payload = checked(bytes, Content::Pixels, width, height)?;
+/// frame, whose record names the hash `record`.
+fn pixels_of(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    record: u128,
+) -> std::result::Result<Vec<u8>, Reason> {
+    let (header, payload) = checked(bytes, Content::Pixels, (width, height), record)?;
     let length = u64::from(width) * u64::from(height) * 4;
     // One byte more than a frame holds, so a payload too long is seen
     // without decoding all of it.
@@ -275,25 +329,33 @@ fn pixels_of(bytes: &[u8], width: u32, height: u32) -> std::result::Result<Vec<u
     (FrameDecoder::new(payload).take(length + 1))
         .read_to_end(&mut pixels)
         .map_err(|_| Reason::Damaged)?;
-    match pixels.len() as u64 == length {
-        true => Ok(pixels),
-        false => Err(Reason::Damaged),
+    if pixels.len() as u64 != length {
+        return Err(Reason::Damaged);
     }
+    decoded(sized(PIXELS, width, height, &pixels), &header)?;
+    Ok(pixels)
 }
 
-/// A mask from the bytes of a pixel file for a `width` by `height` frame.
-fn mask_of(bytes: &[u8], width: u32, height: u32) -> std::result::Result<Vec<bool>, Reason> {
-    let payload = checked(bytes, Content::Mask, width, height)?;
+/// A mask from the bytes of a pixel file for a `width` by `height` frame,
+/// whose record names the hash `record`.
+fn mask_of(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    record: u128,
+) -> std::result::Result<Vec<bool>, Reason> {
+    let (header, payload) = checked(bytes, Content::Mask, (width, height), record)?;
     let count = width as usize * height as usize;
     if payload.len() != count.div_ceil(8) {
         return Err(Reason::Damaged);
     }
     let mask = unpack(payload, count);
     // Bits past the last pixel are zero, so a mask has one spelling.
-    match pack(&mask) == payload {
-        true => Ok(mask),
-        false => Err(Reason::Damaged),
+    if pack(&mask) != payload {
+        return Err(Reason::Damaged);
     }
+    decoded(sized(MASK, width, height, payload), &header)?;
+    Ok(mask)
 }
 
 /// `mask` at one bit a pixel, the first pixel in a byte's lowest bit.

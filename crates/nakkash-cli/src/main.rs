@@ -2,8 +2,20 @@
 //! stdout; failures, logs and timings to stderr. It exits 0, 1 when a check
 //! has an error line, or a failure's [`Kind::exit_code`](nakkash_engine::Kind::exit_code).
 
+// `fidelity --record` will hand the build to the session; until then only
+// the tests read it.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "read once `fidelity --record` hands it on")
+)]
+mod build_identity;
 mod commands;
 mod stats;
+
+/// The build script's checkout probe, tested with the binary's tests.
+#[cfg(test)]
+#[path = "../build/checkout.rs"]
+mod checkout;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

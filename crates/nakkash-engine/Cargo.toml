@@ -35,13 +35,14 @@ nakkash-vector = { path = "../nakkash-vector" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
-# A fidelity record holds unrounded errors, which must read back bit for bit.
-serde_json = { workspace = true, features = ["float_roundtrip"] }
+serde_json.workspace = true
 # Footage paths written relative to the scene that names them.
 pathdiff = "0.2"
 rayon.workspace = true
 # The record's pixel files: their header, and our pixels compressed.
 binrw.workspace = true
+# The hashes a record names pixels and masks by.
+nakkash-hash = { path = "../nakkash-hash" }
 lz4_flex.workspace = true
 # The record's hexadecimal hashes.
 winnow.workspace = true
