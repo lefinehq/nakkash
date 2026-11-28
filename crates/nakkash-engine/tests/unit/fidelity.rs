@@ -792,7 +792,7 @@ fn a_recorded_sample_reused_draws_nothing_and_writes_the_same_ledger() {
     let record = read_sample(&records.join("star")).unwrap();
     assert_eq!(record.sample, "star");
     assert_eq!(record.entry, sample.entry().unwrap());
-    assert_eq!(record.platform, Platform::current());
+    assert_eq!(record.platform.unlike(&Platform::current()), None);
     assert_eq!(record.build.commit.as_deref().map(str::len), Some(40));
     assert_eq!(record.frames.len(), 3);
     let (reused, n) = measured(&sample, &work, &reusing_all(&records, &["star"]));

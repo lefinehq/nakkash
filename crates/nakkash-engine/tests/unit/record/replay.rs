@@ -5,7 +5,7 @@
 use pretty_assertions::assert_eq;
 
 use super::*;
-use crate::record::tests::{room, scratch};
+use crate::record::tests::{as_json, room, scratch};
 use crate::record::{
     Build, Hex128, Platform, RECORD, SampleRecord, Schema, read_sample, write_sample,
 };
@@ -130,7 +130,10 @@ fn a_recorded_sample_opens_with_the_files_its_record_names() {
     let opened = open_replay(&dir).unwrap();
     assert_eq!(opened.replay, replay());
     assert_eq!(opened.scene, "{\"nakkash\":1}\n");
-    assert_eq!(opened.record, read_sample(&dir).unwrap());
+    assert_eq!(
+        as_json(&opened.record),
+        as_json(&read_sample(&dir).unwrap())
+    );
 }
 
 /// A scene or replay another run wrote over the recorded one, or one

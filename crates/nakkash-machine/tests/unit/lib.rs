@@ -150,11 +150,31 @@ fn a_system_is_named_by_its_parts_or_unknown(
     assert_eq!(parse::system_name(parts).as_deref(), named);
 }
 
+/// A Linux system is named by its C library's version, its maths
+/// library's content hash and its kernel's release; a blank hash leaves it
+/// unknown, as a blank version does.
+#[rstest::rstest]
+#[case::named(
+    "0123456789abcdef0123456789abcdef",
+    Some("glibc 2.36, libm 0123456789abcdef0123456789abcdef, Linux 6.1.0-28-amd64")
+)]
+#[case::blank_hash("", None)]
+fn a_linux_system_is_named_with_its_maths_library(#[case] libm: &str, #[case] named: Option<&str>) {
+    let parts = [
+        ("glibc", "2.36"),
+        ("libm", libm),
+        ("Linux", "6.1.0-28-amd64"),
+    ];
+    assert_eq!(parse::system_name(parts).as_deref(), named);
+}
+
 /// This machine names its system as its kind of system does, the same at
-/// every call.
+/// every call; with glibc, by the content of the maths library it loaded.
 #[test]
 fn this_machine_names_its_system() {
     let system = system();
+    // Shown with `--nocapture`, to see what a machine names itself.
+    eprintln!("system: {system:?}");
     #[cfg(target_os = "macos")]
     let prefix = Some("macOS ");
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -170,4 +190,13 @@ fn this_machine_names_its_system() {
         None => assert_eq!(system, None),
     }
     assert_eq!(super::system(), system);
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        let maths = loader::maths_library().expect("glibc's maths library is loaded");
+        let libm = format!(", libm {:032x}, Linux ", maths.hash);
+        assert!(
+            system.as_deref().is_some_and(|s| s.contains(&libm)),
+            "{system:?}"
+        );
+    }
 }

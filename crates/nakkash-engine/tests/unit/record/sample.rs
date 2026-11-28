@@ -9,7 +9,7 @@ use rstest::rstest;
 
 use super::*;
 use crate::diff::{Error, FrameDiff};
-use crate::record::tests::{room, scratch};
+use crate::record::tests::{as_json, room, scratch};
 use crate::record::{Build, FrameRecord, Hex128, Platform, Quota, Schema, Times};
 use nakkash_format::Kind;
 
@@ -93,7 +93,7 @@ fn a_sample_record_round_trips_and_refuses_unknown_fields(
     let path = dir.join(RECORD);
     let json = fs::read_to_string(&path).unwrap();
     insta::assert_snapshot!("record", json);
-    assert_eq!(read_sample(&dir).unwrap(), record());
+    assert_eq!(as_json(&read_sample(&dir).unwrap()), as_json(&record()));
 
     let compact: serde_json::Value = serde_json::from_str(&json).unwrap();
     let compact = serde_json::to_string(&compact).unwrap();
@@ -267,7 +267,7 @@ fn a_record_is_written_only_whole() {
         write_sample(&dir, &other, &room()).unwrap_err().kind,
         Kind::Io
     );
-    assert_eq!(read_sample(&dir).unwrap(), record());
+    assert_eq!(as_json(&read_sample(&dir).unwrap()), as_json(&record()));
 }
 
 #[test]
@@ -311,7 +311,7 @@ fn a_record_read_pinned_names_the_bytes_it_was_read_from() {
     let dir = scratch("pinned");
     write_sample(&dir, &record(), &room()).unwrap();
     let (read, pin) = read_pinned(&dir).unwrap();
-    assert_eq!(read, record());
+    assert_eq!(as_json(&read), as_json(&record()));
     assert_eq!(read_pinned(&dir).unwrap().1, pin);
     let mut other = record();
     other.build.profile = "debug".to_owned();
@@ -324,7 +324,7 @@ fn a_record_read_pinned_names_the_bytes_it_was_read_from() {
     let before = read_pinned(&dir).unwrap().1;
     fs::write(&path, compact.to_string()).unwrap();
     let (read, after) = read_pinned(&dir).unwrap();
-    assert_eq!(read, other);
+    assert_eq!(as_json(&read), as_json(&other));
     assert_ne!(after, before);
 }
 

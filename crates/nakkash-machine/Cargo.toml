@@ -13,7 +13,12 @@ publish.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[dependencies]
+# Names the maths library a render calls by its content (D94).
+nakkash-hash = { path = "../nakkash-hash" }
+
 [dev-dependencies]
+insta.workspace = true
 rstest.workspace = true
 
 # Not the workspace's lints: this crate may hold unsafe code (D48), and

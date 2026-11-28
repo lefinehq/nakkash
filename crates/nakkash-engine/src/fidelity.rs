@@ -248,7 +248,7 @@ impl Sample {
 }
 
 /// How [`measure`] runs, besides the measure itself.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct MeasureOptions {
     /// Whether to write an error image per frame, into `errors/` in the
     /// sample's work folder.

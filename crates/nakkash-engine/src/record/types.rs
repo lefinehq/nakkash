@@ -73,7 +73,10 @@ pub enum Schema {
 ///
 /// Footage a machine cannot decode, or fonts it lacks, already change the
 /// display list, and so the identity, or fail the sample.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Platforms are compared only by [`Platform::unlike`], never by `==`:
+/// equality would take two unknown systems for the same one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Platform {
     /// The processor and system, such as `aarch64-macos`.
@@ -82,8 +85,9 @@ pub struct Platform {
     pub simd: String,
     /// The system's version, whose library holds the maths functions the
     /// rasteriser calls ([`nakkash_machine::system`]), such as `macOS 26.3,
-    /// build 25D125`; none when the system does not say. Required, null or
-    /// not.
+    /// build 25D125`, or on Linux `glibc 2.36, libm <32 hex digits>, Linux
+    /// 6.1.0-28-amd64`, with the content hash of the maths library loaded;
+    /// none when the system does not say. Required, null or not.
     #[serde(deserialize_with = "Option::deserialize")]
     pub system: Option<String>,
     /// The hash of the compiler's version and the flags the engine was
@@ -231,8 +235,8 @@ pub struct FrameRecord {
 }
 
 /// One sample's record: what each of its frames drew, and what it was
-/// drawn with.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// drawn with. Not comparable by `==`, as its [`Platform`] is not.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SampleRecord {
     /// The record's form.

@@ -1,0 +1,5 @@
+---
+source: crates/nakkash-machine/src/../tests/unit/library.rs
+expression: "format!(\"{hash:032x}\")"
+---
+bc8f3b0fcc94db8967a1783bad1bf416

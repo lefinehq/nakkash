@@ -1,7 +1,9 @@
 //! The process's resource use, from `getrusage`, the same call on every
 //! Unix, and the free space of a file system.
 
-use std::ffi::{CStr, CString};
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+use std::ffi::CStr;
+use std::ffi::CString;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -42,8 +44,9 @@ pub(crate) fn rusage() -> Usage {
 }
 
 /// The release of the running kernel, from `uname`, such as
-/// `6.8.0-49-generic`; `None` when the call fails or it is not UTF-8.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "read on Linux"))]
+/// `6.8.0-49-generic`; `None` when the call fails or it is not UTF-8. Only
+/// a system named with glibc names its kernel ([`crate::system`]).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub(crate) fn kernel_release() -> Option<String> {
     let mut name = MaybeUninit::<libc::utsname>::zeroed();
     // SAFETY: `uname` writes one `utsname` into the pointer, which points

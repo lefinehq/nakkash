@@ -23,8 +23,16 @@ use std::time::Duration;
 #[allow(dead_code, reason = "each platform reads some parsers, the tests all")]
 mod parse;
 
+// The pure part of naming a loaded library, which every platform tests.
+#[cfg_attr(
+    not(all(target_os = "linux", target_env = "gnu")),
+    allow(dead_code, reason = "read with glibc, tested everywhere")
+)]
+mod library;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod loader;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(unix)]
@@ -234,9 +242,20 @@ pub fn swap() -> Option<Swap> {
 
 /// The system the process runs on, as far as it can change the bits of a
 /// render's maths, whose functions (`exp`, `sin`, `powf`, …) come from the
-/// system's own library: on macOS its product version and build (`macOS
-/// 26.3, build 25D125`); on Linux the version of the GNU C library (glibc)
-/// and the kernel's release (`glibc 2.39, Linux 6.8.0-49-generic`).
+/// system's own library:
+///
+/// - on macOS its product version and build (`macOS 26.3, build 25D125`).
+///   The maths library (`libsystem_m`) lives in the system's shared
+///   library cache, on the sealed system volume, which changes only with an
+///   update of the system, and every update changes the build, so the build
+///   stands for the library and it is not hashed apart;
+/// - on Linux the version of the GNU C library (glibc), the content hash of
+///   the maths library loaded, and the kernel's release (`glibc 2.39, libm
+///   <32 hex digits>, Linux 6.8.0-49-generic`). glibc's version is its
+///   upstream one, which a distribution's patch update keeps, so the hash
+///   names the library the process calls by its bytes and by the version of
+///   `sin` it calls.
+///
 /// `None` when the system does not say, or on any other system or C
 /// library: a caller must never take an unknown system for a known one.
 pub fn system() -> Option<String> {
