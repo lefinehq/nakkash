@@ -1060,3 +1060,47 @@ fn a_feathered_mask_past_the_frame_is_not_cut_at_its_edge() {
         }
     }
 }
+
+/// An effect that reads round each pixel gives the same pixels wherever
+/// the canvas ends: a blur that spreads past the frame is worked out past
+/// it, not cut at its edge. Found by the evolver's shift relation
+/// (2026-11-28): moving such a scene 3 px right changed the 3 columns
+/// along its left edge by up to 13 of 255.
+#[test]
+fn a_blur_past_the_frame_is_not_cut_at_its_edge() {
+    let frame = |x: f64, y: f64| Frame {
+        nodes: vec![Node::Layer(Layer {
+            transform: Affine::translate((x, y)),
+            effects: vec![
+                Effect::new(
+                    "gaussian-blur",
+                    &[
+                        ("blurriness", ParamValue::Number(10.04)),
+                        ("edges", ParamValue::Choice(1)),
+                    ],
+                )
+                .unwrap(),
+            ],
+            ..Layer::new(vec![cover_rect(44.0, 53.0, Color::WHITE)])
+        })],
+        ..Frame::default()
+    };
+    // The blur spreads past the left and right edges of the 50 px frame;
+    // on the wider frame the same layer lies 3 px right and 5 px lower.
+    let shown = render_with(&frame(3.0, 18.5), 50, 90, RenderOptions::GOLDEN).unwrap();
+    let wider = render_with(&frame(6.0, 23.5), 53, 95, RenderOptions::GOLDEN).unwrap();
+    for y in 0..90 {
+        for x in 0..50 {
+            assert_eq!(shown.pixel(x, y), wider.pixel(x + 3, y + 5), "({x}, {y})");
+        }
+    }
+}
+
+/// A `width` by `height` rectangle at the origin in `color`.
+fn cover_rect(width: f64, height: f64, color: Color) -> Node {
+    Node::Path(PathDraw {
+        path: Rect::new(0.0, 0.0, width, height).to_path(0.1),
+        paint: Paint::Solid(color),
+        style: DrawStyle::Fill(FillRule::NonZero),
+    })
+}
