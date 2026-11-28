@@ -13,10 +13,13 @@
 //!
 //! [D79]: https://github.com/lefinehq/nakkash/blob/main/docs/design/decisions.md#d79-an-edit-checks-only-what-it-can-change
 
+mod scratch;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use nakkash_engine::Session;
+use scratch::Scratch;
 
 /// Edits a scene gets when `NAKKASH_CHECK_EDITS` does not say: few, so the
 /// test stays quick unoptimised; a run with more is a release-mode job.
@@ -164,21 +167,17 @@ fn an_edit(session: &Session, draw: &mut Draw) -> String {
     }
 }
 
-/// The report of `edited`'s scene from scratch: written beside `path`, the
-/// scene it was made from, so it reads its files from the same folder, then
-/// read by a new session and checked, with no check kept from before.
-fn from_scratch(edited: &Session, path: &Path) -> String {
-    let name = format!(
-        ".incremental-{}-{}",
-        std::process::id(),
-        path.file_name().expect("a file name").to_string_lossy()
-    );
-    let copy = path.with_file_name(name);
-    fs::write(
-        &copy,
-        nakkash_format::write_document(edited.document().raw()),
-    )
-    .expect("the edited scene is written");
+/// The report of `edited`'s scene from scratch: written into `scratch`,
+/// never beside `path`, the scene it was made from, whose folder other
+/// tests read, with the files it names copied so it reads them as from
+/// that folder ([`Scratch::beside`]); then read by a new session and
+/// checked, with no check kept from before.
+fn from_scratch(edited: &Session, path: &Path, scratch: &Scratch) -> String {
+    let raw = edited.document().raw();
+    let copy = scratch
+        .beside(path, raw)
+        .join(path.file_name().expect("a file name"));
+    fs::write(&copy, nakkash_format::write_document(raw)).expect("the edited scene is written");
     let report = Session::open(&copy).and_then(|session| session.check());
     let _ = fs::remove_file(&copy);
     format!("{:?}", report.expect("the edited scene checks"))
@@ -212,6 +211,7 @@ fn an_edit_checks_as_a_check_from_scratch() {
         .and_then(|n| n.parse().ok())
         .unwrap_or(EDITS);
     let (mut scenes_checked, mut compared) = (0, 0);
+    let scratch = Scratch::new("an_edit_checks_as_a_check_from_scratch");
     for path in scenes() {
         let Ok(master) = Session::open(&path) else {
             continue;
@@ -243,7 +243,7 @@ fn an_edit_checks_as_a_check_from_scratch() {
                 };
                 applied.push(edit);
                 let kept = format!("{report:?}");
-                let fresh = from_scratch(&next, &path);
+                let fresh = from_scratch(&next, &path, &scratch);
                 assert!(
                     kept == fresh,
                     "{}: after {applied:?} the kept check differs from the check from scratch: {}",

@@ -13,15 +13,21 @@
 //! many frames of each scene are drawn, spread from the first to the last
 //! (`all` draws every one, a release-mode job for long scenes).
 //!
-//! A form is written beside the scene it comes from, under a name starting
-//! with a dot, so the files a scene names resolve as they do for the scene,
-//! and other tests listing the same folders leave it out. It is removed when
-//! the comparison ends, failed or not.
+//! A form is written in the test's own scratch folder, never beside the
+//! scene it comes from, whose folder other tests read: the format's corpus
+//! test read a half-written form there and failed. The files a scene names
+//! are copied to the same place beside the form ([`Scratch::beside`]), so
+//! they resolve as they do for the scene. A form is removed when its
+//! comparison ends, and the scratch folder when the test does, failed or
+//! not.
+
+mod scratch;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use nakkash_engine::{RenderOptions, Session};
+use scratch::Scratch;
 use serde_json::Value as Json;
 
 /// Frames drawn per scene when `NAKKASH_EQUIVALENT_FRAMES` does not say:
@@ -139,29 +145,28 @@ impl Drop for Written {
     }
 }
 
-/// `scene` written in `form` beside it.
-fn write(scene: &Path, json: &Json, form: &Form) -> Written {
+/// `scene` written in `form` into `beside`, the scratch folder standing for
+/// the scene's own.
+fn write(scene: &Path, beside: &Path, json: &Json, form: &Form) -> Written {
     let stem = scene.file_stem().expect("a file name").to_string_lossy();
-    let name = format!(".{stem}.{}.{}.json", form.name, std::process::id());
-    let path = scene.with_file_name(name);
+    let path = beside.join(format!("{stem}.{}.json", form.name));
     if !form.split {
         fs::write(&path, (form.write)(json)).expect("write the form");
         return Written(path, None);
     }
     // The compositions' files go in a folder of this form's own, so forms of
-    // other scenes in the same folder, and other runs, keep apart.
-    let folder = format!(".{stem}.{}.{}.comps", form.name, std::process::id());
+    // other scenes in the same folder keep apart.
+    let folder = format!("{stem}.{}.comps", form.name);
     let (mut top, comps) = nakkash_format::include::split(json);
-    fs::create_dir_all(scene.with_file_name(&folder)).expect("make the folder");
+    fs::create_dir_all(beside.join(&folder)).expect("make the folder");
     for (file, comp) in comps {
         let name = file.strip_prefix("comps/").expect("a composition's file");
         let id = name.strip_suffix(".json").expect("a JSON file");
-        fs::write(scene.with_file_name(&folder).join(name), comp.to_string())
-            .expect("write a composition");
+        fs::write(beside.join(&folder).join(name), comp.to_string()).expect("write a composition");
         top["comps"][id]["include"] = Json::String(format!("{folder}/{name}"));
     }
     fs::write(&path, (form.write)(&top)).expect("write the form");
-    Written(path, Some(scene.with_file_name(folder)))
+    Written(path, Some(beside.join(folder)))
 }
 
 /// The frames of `session` to draw: `n` spread from the first to the last,
@@ -230,6 +235,7 @@ fn every_form_of_a_scene_reads_and_draws_as_the_scene() {
 fn compare_every_form() {
     let scenes = scenes();
     assert!(!scenes.is_empty(), "no scene to compare");
+    let scratch = Scratch::new("every_form_of_a_scene_reads_and_draws_as_the_scene");
     let mut failures = Vec::new();
     for scene in &scenes {
         eprintln!("comparing {}", scene.display());
@@ -237,8 +243,9 @@ fn compare_every_form() {
         let json: Json = serde_json::from_str(&text).expect("the scene is JSON");
         let at = Session::open(scene).map(|s| frames(&s)).unwrap_or_default();
         let (want_scene, want_frames) = reading(scene, &at);
+        let beside = scratch.beside(scene, &json);
         for form in FORMS {
-            let written = write(scene, &json, form);
+            let written = write(scene, &beside, &json, form);
             let (scene_read, frames_drawn) = reading(&written.0, &at);
             let name = scene.display();
             if scene_read != want_scene {
