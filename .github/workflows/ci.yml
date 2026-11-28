@@ -60,7 +60,10 @@ jobs:
         run: rustup toolchain install
       - run: rustup component add llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - run: cargo llvm-cov --workspace --locked --exclude-from-report nakkash-gpu --exclude-from-report nakkash-onnx --fail-under-lines 85
+      # Under nextest, as `check` runs them: each test is its own process,
+      # so no test sees tracing state another test's thread is changing.
+      - uses: taiki-e/install-action@cargo-nextest
+      - run: cargo llvm-cov nextest --workspace --locked --exclude-from-report nakkash-gpu --exclude-from-report nakkash-onnx --fail-under-lines 85
 
   # Formatting, the one part of `check` that is quick enough for pull requests.
   fmt:
