@@ -10,9 +10,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# One run per branch at a time. A push waits for the run before it to finish
+# rather than cancelling it: with cancelling, merges that land closer together
+# than a run's hour left `development` with no finished run at all. GitHub
+# keeps only the newest waiting run, so a burst of merges costs one more run.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/development' }}
+  cancel-in-progress: false
 
 jobs:
   check:
