@@ -11,7 +11,7 @@ use super::*;
 /// What a build on a plain release profile compiles with.
 fn release() -> Codegen {
     Codegen {
-        rustc: b"rustc 1.92.0 (ded5c06cf 2025-12-08)\nhost: aarch64-apple-darwin\nLLVM version: 21.1.3\n"
+        rustc: b"rustc 1.92.0 (0a1b2c3d4 2025-12-08)\nhost: aarch64-apple-darwin\nLLVM version: 21.1.3\n"
             .to_vec(),
         flags: [
             Some(String::new()),
