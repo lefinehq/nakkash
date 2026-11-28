@@ -953,7 +953,10 @@ fn an_entry_whose_path_is_not_unicode_is_hashed_only_when_recording() {
 #[case::absolute("/m001")]
 #[case::trailing("m001/")]
 fn a_manifest_refuses_an_id_that_is_not_one_folder_name(#[case] id: &str) {
-    let dir = scratch(&format!("id-{}", id.len()));
+    // A folder per case, named by the case's id, byte for byte: `cargo
+    // test` runs the cases as threads of one process.
+    let hex: String = id.bytes().map(|b| format!("{b:02x}")).collect();
+    let dir = scratch(&format!("id-{hex}"));
     let path = dir.join("samples.json");
     let manifest = serde_json::json!({
         "samples": [{"id": id, "project": "a.aep", "reference": "r", "fps": 25}],

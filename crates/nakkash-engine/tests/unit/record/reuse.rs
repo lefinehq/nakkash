@@ -350,6 +350,10 @@ fn a_recording_is_checked_to_have_begun() {
     let reused = Some(reusing.dir());
     let other = scratch("reuse-check-other");
     check_recording(&other, reused).unwrap();
+    // A folder not made yet has not begun: begin_recording makes it.
+    let error = check_recording(&other.join("not-made-yet"), None).unwrap_err();
+    assert_eq!(error.kind, Kind::Invalid, "{error}");
+    begin_recording(&other.join("not-made-yet"), None).unwrap();
     check_recording(&other.join("not-made-yet"), None).unwrap();
     write_sample(&other, &record()).unwrap();
     let error = check_recording(&other, None).unwrap_err();
@@ -443,6 +447,12 @@ fn every_reuse_error_message() {
         (
             "not begun",
             check_recording(&not_begun, None).unwrap_err().to_string(),
+        ),
+        (
+            "not made",
+            check_recording(&not_begun.join("never-made"), None)
+                .unwrap_err()
+                .to_string(),
         ),
     ];
     let platform = Platform::current();

@@ -348,6 +348,26 @@ fn a_recording_that_has_not_begun_is_refused() {
     assert!(read_sample(&dir).is_ok(), "the record is kept");
 }
 
+/// A folder that does not exist has not begun a recording either: it is
+/// refused with the same error, before any frame is drawn.
+#[test]
+fn a_recording_into_a_missing_folder_is_refused_before_any_draw() {
+    let scene = session(SCENE);
+    let frames = references("missing-ref", &scene, &[0.0, 5.0]);
+    let dir = scratch("missing").join("never-made");
+    let opts = DiffOptions {
+        record: Some(dir.clone()),
+        ..options(frames, 2.0)
+    };
+    let mut error = None;
+    let n = renders(|| error = Some(scene.diff_recorded(&opts).unwrap_err()));
+    let error = error.unwrap();
+    assert_eq!(error.kind, Kind::Invalid, "{error}");
+    assert!(error.message.contains("has not begun"), "{error}");
+    assert_eq!(n, 0, "refused before any draw");
+    assert!(!dir.exists(), "nothing written");
+}
+
 /// A recording begins by clearing its folder: a frame file of a longer
 /// recording before it does not outlive it.
 #[test]

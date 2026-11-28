@@ -314,16 +314,22 @@ pub fn begin_recording(dir: &Path, reused: Option<&Path>) -> Result<()> {
 /// # Errors
 /// An invalid diagnostic when `dir` is the folder `reused`, under any
 /// spelling of its path, since a recording would write over the frames it
-/// reads; or when `dir` holds a record, since the recording has not begun.
+/// reads; or when `dir` is not a folder or holds a record, since the
+/// recording has not begun.
 pub fn check_recording(dir: &Path, reused: Option<&Path>) -> Result<()> {
     refuse_same_folder(dir, reused)?;
-    match dir.join(RECORD).exists() {
-        true => Err(invalid(
+    let unbegun = match (dir.is_dir(), dir.join(RECORD).exists()) {
+        (false, _) => Some("the folder does not exist"),
+        (true, true) => Some("the folder holds a record"),
+        (true, false) => None,
+    };
+    match unbegun {
+        Some(why) => Err(invalid(
             dir,
-            "the folder holds a record, and a recording into it has not begun".to_owned(),
-            "a recording begun with `begin_recording`, which removes the record first",
+            format!("{why}, and a recording into it has not begun"),
+            "a recording begun with `begin_recording`, which makes the folder and removes its record first",
         )),
-        false => Ok(()),
+        None => Ok(()),
     }
 }
 
